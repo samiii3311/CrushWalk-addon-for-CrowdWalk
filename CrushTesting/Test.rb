@@ -1,6 +1,7 @@
 require 'RubyAgentBase.rb'
 require 'PhysicsBlackboard.rb'
 require 'GhostAgentManager.rb'
+require 'TelemetryHandler.rb'
 
 class Test < RubyAgentBase
 
@@ -32,6 +33,7 @@ class Test < RubyAgentBase
     space_term = ItkTerm.getArg(@fallback, "physicalSpace")
     @physicalSpace = space_term ? space_term.getDouble() : 0.5 
     @my_resistance = @my_mass * 9.8 * 0.5
+    @last_crush_pressure = 0.0
   end
 
   def calcSpeed(previousSpeed)
@@ -48,6 +50,12 @@ class Test < RubyAgentBase
     end
 
     _speed = @javaAgent.obstructer.calcAffectedSpeed(_speed)
+    
+    telemetry_data = {
+      pressure: @last_crush_pressure,
+      speed: _speed
+    }
+    TelemetryHandler.update_telemetry(@javaAgent, telemetry_data)
 
     return _speed
   end
@@ -376,6 +384,8 @@ class Test < RubyAgentBase
     # calc to see if agent is crushed
     final_crush_pressure = [0.0, raw_crush_pressure - @my_resistance].max
     
+    @last_crush_pressure = final_crush_pressure
+
     # calc to see how much the agent gets pushed
     if raw_net_force_x > 0
       net_force_x = [0.0, raw_net_force_x - @my_resistance].max

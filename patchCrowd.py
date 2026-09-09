@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """
 patch_crowdwalk.py
-Auto-discovers target Java files, writes DynamicAgentLogger.java,
-injects custom research hooks, fixes quickstart double-launch, and compiles with Gradle.
+Idempotent, robust CrowdWalk patcher and compiler.
+Safely injects custom research hooks, dynamic logger, and ghost mechanics.
+Safe to run multiple times without duplicating code.
 """
 
-import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
 
 def find_repo_root() -> Path:
-    """Finds the root directory of the CrowdWalk repository."""
-    candidates = [Path("."), Path("./crowdwalk"), Path("../")]
+    """Detects CrowdWalk root directory containing build.gradle."""
+    cwd = Path.cwd().resolve()
+    candidates = [cwd, cwd.parent, cwd / "crowdwalk", cwd / ".." / "crowdwalk"]
     for p in candidates:
-        if (p / "build.gradle").exists() or (p / "src").exists():
+        if (p / "build.gradle").exists():
             return p.resolve()
-    print("[!] Could not detect CrowdWalk root directory.")
+    print("[!] Error: Could not locate build.gradle in current or parent directories.")
     sys.exit(1)
 
 
@@ -25,30 +27,30 @@ REPO_DIR = find_repo_root()
 
 
 def find_file(filename: str) -> Path:
-    """Recursively searches for a file by name inside the repository."""
+    """Recursively finds a target file inside the repository."""
     matches = list(REPO_DIR.rglob(filename))
-    if not matches:
-        return None
-    return matches[0]
+    return matches[0] if matches else None
 
 
-def patch_file(filename: str, search: str, replace: str, marker: str = None) -> bool:
+def patch_file_exact(filename: str, search: str, replace: str, marker: str) -> bool:
+    """Safely replaces a specific block only if the marker does not already exist."""
     target_path = find_file(filename)
     if not target_path:
-        print(f"[!] Error: File '{filename}' not found anywhere in {REPO_DIR}")
+        print(f"[!] Error: File '{filename}' not found.")
         return False
 
     content = target_path.read_text(encoding="utf-8").replace("\r\n", "\n")
     search_norm = search.replace("\r\n", "\n")
     replace_norm = replace.replace("\r\n", "\n")
-    check_marker = (marker or replace_norm).strip()
 
-    if marker and check_marker in content and search_norm not in content:
-        print(f"[*] Already patched: {filename}")
+    # 1. Idempotency check: Skip if already present
+    if marker in content:
+        print(f"[*] Already patched: {filename} -> ({marker[:30]}...)")
         return True
 
+    # 2. Check if anchor is present
     if search_norm not in content:
-        print(f"[!] Search anchor not found in {filename}:\n    '{search_norm[:45]}...'")
+        print(f"[!] Warning: Anchor missing in {filename}:\n    '{search_norm[:45]}...'")
         return False
 
     target_path.write_text(content.replace(search_norm, replace_norm, 1), encoding="utf-8")
@@ -72,13 +74,10 @@ public class DynamicAgentLogger {
     private PrintWriter writer = null;
     private List<String> fields = new ArrayList<>();
 
-    public DynamicAgentLogger(AgentHandler handler) {
-        // Constructor maintained for AgentHandler compatibility
-    }
+    public DynamicAgentLogger(AgentHandler handler) {}
 
     public void init(Term config) {
         if (config != null) {
-            // Use getArgTerm for the fields list
             Term fieldListTerm = config.getArgTerm("fields");
             if (fieldListTerm != null && fieldListTerm.isArray()) {
                 for (int i = 0; i < fieldListTerm.getArraySize(); i++) {
@@ -86,7 +85,6 @@ public class DynamicAgentLogger {
                 }
             }
 
-            // Use getArgString for the filename
             String filename = config.getArgString("file");
             if (filename == null) filename = "dynamic_metrics.csv";
 
@@ -120,12 +118,9 @@ public class DynamicAgentLogger {
                 String key = fields.get(i);
                 Object val = null;
 
-                // Priority 1: Check if the key exists as a tag
                 if (agent.hasTag(key)) {
                     val = "1";
-                } 
-                // Priority 2: Check the agent's Term config for the value
-                else if (agent.config != null) {
+                } else if (agent.config != null) {
                     val = agent.config.getArg(key);
                 }
                 
@@ -148,27 +143,23 @@ public class DynamicAgentLogger {
 '''
 
 
-def ensure_dynamic_agent_logger():
-    """Finds the Simulator package directory and writes DynamicAgentLogger.java."""
-    handler_path = find_file("AgentHandler.java")
-    if not handler_path:
-        print("[!] Could not locate AgentHandler.java to place DynamicAgentLogger.java.")
-        return False
+def apply_agent_base():
+    p = find_file("AgentBase.java")
+    if not p:
+        return
+    txt = p.read_text(encoding="utf-8").replace("\r\n", "\n")
 
-    target_path = handler_path.parent / "DynamicAgentLogger.java"
-    target_path.write_text(DYNAMIC_AGENT_LOGGER_SRC.strip() + "\n", encoding="utf-8")
-    print(f"[+] Created/Updated: {target_path.relative_to(REPO_DIR)}")
-    return True
+    marker = "protected boolean allowOverlap = false;"
+    if marker in txt:
+        print("[*] Already patched: AgentBase.java")
+        return
 
+    # Clean previous/malformed attempts
+    txt = re.sub(r"\s*// === Custom: Ghost & Overlap ===[\s\S]*", "", txt)
+    txt = re.sub(r"\n// ;;; Local Variables:[\s\S]*", "", txt)
+    txt = re.sub(r"\s*\}\s*$", "", txt)
 
-def apply_patches():
-    print(f">>> Target repository root: {REPO_DIR}")
-
-    # 0. Write DynamicAgentLogger.java
-    ensure_dynamic_agent_logger()
-
-    # 1. AgentBase.java
-    agent_base_fields = """
+    new_tail = """
     // === Custom: Ghost & Overlap ===
     protected boolean allowOverlap = false;
     public void setAllowOverlap(boolean flag) { this.allowOverlap = flag; }
@@ -177,52 +168,44 @@ def apply_patches():
     protected boolean ghostMode = false;
     public boolean isGhost() { return ghostMode; }
     public void setGhost(boolean flag) { ghostMode = flag; }
-}"""
-    patch_file(
-        "AgentBase.java",
-        search="}\n// ;;; Local Variables:",
-        replace=agent_base_fields + "\n// ;;; Local Variables:",
-        marker="boolean ghostMode = false;",
-    )
+}
+// ;;; Local Variables:
+// ;;; mode: java
+// ;;; End:
+"""
+    p.write_text(txt + new_tail, encoding="utf-8")
+    print("[+] Successfully patched: AgentBase.java")
 
-    # 2. WalkAgent.java
-    patch_file(
+
+def apply_walk_agent():
+    patch_file_exact(
         "WalkAgent.java",
         search="protected double calcSocialForce(double dist) {",
-        replace="""protected double calcSocialForce(double dist) {
-        if (this.isGhost()) return 0.0;""",
+        replace="protected double calcSocialForce(double dist) {\n        if (this.isGhost()) return 0.0;",
         marker="if (this.isGhost()) return 0.0;",
     )
-
-    patch_file(
+    patch_file_exact(
         "WalkAgent.java",
         search="protected double calcSocialForceToHeading(double dx, double dy) {",
-        replace="""protected double calcSocialForceToHeading(double dx, double dy) {
-        if (this.isGhost()) return 0.0;""",
+        replace="protected double calcSocialForceToHeading(double dx, double dy) {\n        if (this.isGhost()) return 0.0;",
         marker="protected double calcSocialForceToHeading(double dx, double dy) {\n        if (this.isGhost()) return 0.0;",
     )
-
-    patch_file(
+    patch_file_exact(
         "WalkAgent.java",
         search="private double accumulateSocialForces(SimTime currentTime, double lowerBound) {",
-        replace="""private double accumulateSocialForces(SimTime currentTime, double lowerBound) {
-        if (this.isGhost()) return 0.0;""",
+        replace="private double accumulateSocialForces(SimTime currentTime, double lowerBound) {\n        if (this.isGhost()) return 0.0;",
         marker="private double accumulateSocialForces(SimTime currentTime, double lowerBound) {\n        if (this.isGhost()) return 0.0;",
     )
-
-    patch_file(
+    patch_file_exact(
         "WalkAgent.java",
         search="AgentBase agent = otherLane.get(otherLane.size() - i - 1);",
-        replace="""AgentBase agent = otherLane.get(otherLane.size() - i - 1);
-                if (agent.isGhost()) continue;""",
+        replace="AgentBase agent = otherLane.get(otherLane.size() - i - 1);\n                if (agent.isGhost()) continue;",
         marker="if (agent.isGhost()) continue;",
     )
-
-    patch_file(
+    patch_file_exact(
         "WalkAgent.java",
         search="for(AgentBase agent : sameLane) {",
-        replace="""for(AgentBase agent : sameLane) {
-                if (agent.isGhost()) continue;""",
+        replace="for(AgentBase agent : sameLane) {\n                if (agent.isGhost()) continue;",
         marker="for(AgentBase agent : sameLane) {\n                if (agent.isGhost()) continue;",
     )
 
@@ -249,23 +232,29 @@ def apply_patches():
                     break;
                 }
             }"""
-    patch_file(
+    patch_file_exact(
         "WalkAgent.java",
         search=orig_pred,
         replace=custom_pred,
         marker="AgentBase predecessor = null;",
     )
 
-    # 3. AgentHandler.java
-    patch_file(
+
+def apply_agent_handler():
+    p = find_file("AgentHandler.java")
+    if not p:
+        return
+    txt = p.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+    # In-line hook patches with unique markers
+    patch_file_exact(
         "AgentHandler.java",
         search="private EvacuationSimulator simulator;",
-        replace="""private EvacuationSimulator simulator;
-    private DynamicAgentLogger dynamicLogger = new DynamicAgentLogger(this);""",
+        replace="private EvacuationSimulator simulator;\n    private DynamicAgentLogger dynamicLogger = new DynamicAgentLogger(this);",
         marker="private DynamicAgentLogger dynamicLogger",
     )
 
-    patch_file(
+    patch_file_exact(
         "AgentHandler.java",
         search="agent.update(currentTime);",
         replace="""agent.update(currentTime);
@@ -277,15 +266,14 @@ def apply_patches():
         marker="logCrushedAgent(agent, currentTime);",
     )
 
-    patch_file(
+    patch_file_exact(
         "AgentHandler.java",
         search="setupEvacuatedAgentsLogger() ;",
-        replace="""setupEvacuatedAgentsLogger() ;
-        setupCrushedAgentsLogger();""",
+        replace="setupEvacuatedAgentsLogger() ;\n        setupCrushedAgentsLogger();",
         marker="setupCrushedAgentsLogger();",
     )
 
-    patch_file(
+    patch_file_exact(
         "AgentHandler.java",
         search="initEvacuatedAgentsLogger() ;",
         replace="""initEvacuatedAgentsLogger() ;
@@ -294,16 +282,25 @@ def apply_patches():
         marker="initCrushedAgentsLogger();",
     )
 
-    patch_file(
+    patch_file_exact(
         "AgentHandler.java",
         search="closeEvacuatedAgentsLogger();",
-        replace="""closeEvacuatedAgentsLogger();
-        closeCrushedAgentsLogger();
-        dynamicLogger.close();""",
+        replace="closeEvacuatedAgentsLogger();\n        closeCrushedAgentsLogger();\n        dynamicLogger.close();",
         marker="closeCrushedAgentsLogger();",
     )
 
-    crushed_handler_methods = """
+    # Class-level methods insertion
+    marker_methods = "public int numOfCrushed()"
+    txt = p.read_text(encoding="utf-8").replace("\r\n", "\n")
+    if marker_methods in txt:
+        print("[*] Already patched: AgentHandler.java (crush methods)")
+        return
+
+    txt = re.sub(r"\s*// === Custom: Crushed & Log Helpers ===[\s\S]*", "", txt)
+    txt = re.sub(r"\n// ;;; Local Variables:[\s\S]*", "", txt)
+    txt = re.sub(r"\s*\}\s*$", "", txt)
+
+    crushed_methods = """
     // === Custom: Crushed & Log Helpers ===
     public int numOfCrushed() {
         int crushed = 0;
@@ -371,36 +368,37 @@ def apply_patches():
         crushedAgentsLogger = openLogger(name, Level.INFO, dirPath + "/log_crushed_agents.csv");
         crushedAgentsLoggerFormatter.outputHeaderToLoggerInfo(crushedAgentsLogger);
     }
-}"""
-    patch_file(
-        "AgentHandler.java",
-        search="    public void setupAgentFactoryByRuby(ItkRuby rubyEngine) {\n        for(AgentFactory factory : agentFactoryList) {\n            if(factory instanceof AgentFactoryByRuby) {\n                ((AgentFactoryByRuby)factory).setupRubyEngine(rubyEngine) ;\n            }\n        }\n    }\n}",
-        replace="    public void setupAgentFactoryByRuby(ItkRuby rubyEngine) {\n        for(AgentFactory factory : agentFactoryList) {\n            if(factory instanceof AgentFactoryByRuby) {\n                ((AgentFactoryByRuby)factory).setupRubyEngine(rubyEngine) ;\n            }\n        }\n    }\n"
-        + crushed_handler_methods,
-        marker="numOfCrushed()",
-    )
+}
+// ;;; Local Variables:
+// ;;; mode: java
+// ;;; End:
+"""
+    p.write_text(txt + crushed_methods, encoding="utf-8")
+    print("[+] Successfully patched: AgentHandler.java (crush methods)")
 
-    # 4. EvacuationSimulator.java
-    patch_file(
+
+def apply_simulator_and_launcher():
+    # EvacuationSimulator.java
+    patch_file_exact(
         "EvacuationSimulator.java",
         search='agentHandler.numOfEvacuatedAgents(), agentHandler.getMaxAgentCount());',
         replace='agentHandler.numOfEvacuatedAgents(), agentHandler.getMaxAgentCount(), agentHandler.numOfCrushed(), agentHandler.getMaxAgentCount());',
         marker="agentHandler.numOfCrushed()",
     )
-    patch_file(
+    patch_file_exact(
         "EvacuationSimulator.java",
         search='"Walking: %d  Generated: %d  Evacuated: %d / %d"',
         replace='"Walking: %d  Generated: %d  Evacuated: %d / %d Crushed: %d / %d"',
         marker="Crushed: %d / %d",
     )
-    patch_file(
+    patch_file_exact(
         "EvacuationSimulator.java",
         search='"Walking: %d  Generated: %d  Evacuated(Stuck): %d(%d) / %d"',
         replace='"Walking: %d  Generated: %d  Evacuated(Stuck): %d(%d) / %d Crushed: %d / %d"',
-        marker="Crushed: %d / %d",
+        marker="Evacuated(Stuck): %d(%d) / %d Crushed: %d / %d",
     )
 
-    # 5. BasicSimulationLauncher.java
+    # BasicSimulationLauncher.java
     launcher_check = """        finished = simulator.updateEveryTick();
         nodagumi.ananPJ.Simulator.AgentHandler agentHandler = simulator.getAgentHandler();
         boolean aliveFound = false;
@@ -416,14 +414,14 @@ def apply_patches():
         if (!aliveFound && (agentHandler.numOfCrushed() + agentHandler.numOfEvacuatedAgents() >= agentHandler.getMaxAgentCount())){
             finished = true;
         }"""
-    patch_file(
+    patch_file_exact(
         "BasicSimulationLauncher.java",
         search="finished = simulator.updateEveryTick();",
         replace=launcher_check,
         marker="agentHandler.numOfCrushed() + agentHandler.numOfEvacuatedAgents()",
     )
 
-    # 6. quickstart.sh (Remove duplicate launch command)
+    # quickstart.sh (Duplicate command fix)
     double_launch = """echo "$JAVA $JAVAOPT -Djdk.gtk.version=2 -jar $JAR $*"
 $JAVA $JAVAOPT -Djdk.gtk.version=2 -jar $JAR $*
 
@@ -433,7 +431,7 @@ $JAVA $JAVAOPT -Djdk.gtk.version=2 -jar $JAR $*"""
     single_launch = """echo "$JAVA $JAVAOPT -Djdk.gtk.version=2 -jar $JAR $*"
 $JAVA $JAVAOPT -Djdk.gtk.version=2 -jar $JAR $*"""
 
-    patch_file(
+    patch_file_exact(
         "quickstart.sh",
         search=double_launch,
         replace=single_launch,
@@ -441,31 +439,50 @@ $JAVA $JAVAOPT -Djdk.gtk.version=2 -jar $JAR $*"""
     )
 
 
-def run_gradle_build(skip_tests: bool = True):
+def build_with_gradle(skip_tests: bool = True):
     print("\n>>> Building CrowdWalk with Gradle...")
     is_windows = sys.platform == "win32"
     gradle_exec = REPO_DIR / ("gradlew.bat" if is_windows else "gradlew")
 
     if not gradle_exec.exists():
-        print(f"[!] Could not find Gradle wrapper at {gradle_exec.resolve()}")
+        print(f"[!] Error: Could not find Gradle wrapper at {gradle_exec.resolve()}")
         return False
 
     if not is_windows:
-        os.chmod(gradle_exec, 0o755)
+        gradle_exec.chmod(0o755)
 
-    build_cmd = [str(gradle_exec.resolve()), "build"]
+    build_cmd = [str(gradle_exec.resolve()), "compileJava", "jar"]
     if skip_tests:
-        build_cmd.extend(["-x", "test"])
+        build_cmd.extend(["-x", "test", "-x", "check"])
 
     result = subprocess.run(build_cmd, cwd=REPO_DIR, check=False)
     if result.returncode == 0:
-        print("\n[✓] CrowdWalk patched and built successfully!")
+        print("\n[✓] CrowdWalk patched and compiled successfully!")
         return True
     else:
-        print(f"\n[!] Gradle build exited with code: {result.returncode}")
+        print(f"\n[!] Gradle build exited with status: {result.returncode}")
         return False
 
 
+def main():
+    print(f">>> Target repository root: {REPO_DIR}")
+
+    # 1. Ensure DynamicAgentLogger exists
+    handler_path = find_file("AgentHandler.java")
+    if handler_path:
+        target_logger = handler_path.parent / "DynamicAgentLogger.java"
+        target_logger.write_text(DYNAMIC_AGENT_LOGGER_SRC.strip() + "\n", encoding="utf-8")
+        print(f"[+] Created/Updated: {target_logger.relative_to(REPO_DIR)}")
+
+    # 2. Apply all patches with strict guards
+    apply_agent_base()
+    apply_walk_agent()
+    apply_agent_handler()
+    apply_simulator_and_launcher()
+
+    # 3. Build JAR
+    build_with_gradle(skip_tests=True)
+
+
 if __name__ == "__main__":
-    apply_patches()
-    run_gradle_build(skip_tests=True)
+    main()

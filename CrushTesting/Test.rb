@@ -1,3 +1,5 @@
+# test.rb
+require 'digest'
 require 'RubyAgentBase.rb'
 require 'PhysicsBlackboard.rb'
 require 'GhostAgentManager.rb'
@@ -13,35 +15,73 @@ class Test < RubyAgentBase
     super(agent, config, fallback)
 
     props = getSimulator().getProperties()
-    @personalSpace = props.getDouble("personalSpace",2.0 * 0.522)
-    @physicalSpace = props.getDouble("physicalSpace",0.5)
-    @widthUnit_OtherLane = props.getDouble("widthUnit_OtherLane",0.9)
-    @widthUnit_SameLane = props.getDouble("widthUnit_SameLane",0.9)
-    @physicalThreshold = props.getDouble("physicalThreshold",0.9)
-    @insDist = props.getDouble("insensitiveDistanceInCounterFlow",@personalSpace*0.5)
-    @a0 = props.getDouble("a0",0.962)
-    @a1 = props.getDouble("a1",0.8497467021796484659)
-    @a2 = props.getDouble("a2",4.682)
+    @personalSpace = props.getDouble("personalSpace", 2.0 * 0.522)
+    @physicalSpace = props.getDouble("physicalSpace", 0.5)
+    @widthUnit_OtherLane = props.getDouble("widthUnit_OtherLane", 0.9)
+    @widthUnit_SameLane = props.getDouble("widthUnit_SameLane", 0.9)
+    @physicalThreshold = props.getDouble("physicalThreshold", 0.9)
+    @insDist = props.getDouble("insensitiveDistanceInCounterFlow", @personalSpace * 0.5)
+    @a0 = props.getDouble("a0", 0.962)
+    @a1 = props.getDouble("a1", 0.8497467021796484659)
+    @a2 = props.getDouble("a2", 4.682)
     @body_drag_coefficient = props.getDouble("bodyDrag", 300.0)
     @crush_threshold = props.getDouble("crushThreshold", 3000.0)
 
-
-
     mass_term = ItkTerm.getArg(@fallback, "mass")
-    @my_mass = mass_term ? mass_term.getDouble() : 60.0 # Default to 60kg
-    PhysicsBlackboard.instance.log_mass(getAgentId(),@my_mass)
+    @my_mass = mass_term ? mass_term.getDouble() : 60.0
+    PhysicsBlackboard.instance.log_mass(getAgentId(), @my_mass)
     space_term = ItkTerm.getArg(@fallback, "physicalSpace")
     @physicalSpace = space_term ? space_term.getDouble() : 0.5 
     @my_resistance = @my_mass * 9.8 * 0.5
     @last_crush_pressure = 0.0
   end
 
+  def init_speed_factor(mean = 1.0, std = 0.2, min_val = 0.6, max_val = 1.5)
+    agent_id = @javaAgent.getID().to_s
+    
+    # Return from blackboard if already calculated for this unique agent
+    existing_factor = PhysicsBlackboard.instance.get_speed_factor(agent_id)
+    return existing_factor if existing_factor
+
+    # Trim MD5 hex digest to 8 chars (32-bit int) to prevent massive 128-bit Bignums
+    agent_hash = Digest::MD5.hexdigest(agent_id)[0..7].to_i(16)
+    
+    u1 = [(agent_hash % 100000) / 100000.0, 0.0001].max
+    u2 = (((agent_hash / 100000) % 100000) / 100000.0)
+
+    standard_normal = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math::PI * u2)
+    factor = [[min_val, mean + (standard_normal * std)].max, max_val].min.round(3)
+
+    # Save permanently in the PhysicsBlackboard registry
+    PhysicsBlackboard.instance.set_speed_factor(agent_id, factor) 
+    PhysicsBlackboard.instance.set_agent_hash(agent_id, agent_hash)
+    
+    return factor
+  end
+  
+  def ensure_fresh_config(agent_id)
+    return if @config_checked
+    @config_checked = true
+
+    current_signature = "#{agent_id}:#{@javaAgent.generatedTime.getRelativeTime()}"
+    stored_signature = (@javaAgent.config && @javaAgent.config.respond_to?(:getArgString)) ? @javaAgent.config.getArgString("agent_signature") : nil
+
+    if @javaAgent.config.nil? || stored_signature != current_signature
+      @javaAgent.config = ItkTerm.newTerm()        # was ItkTerm.new() / Java::nodagumi::Itk::Term.new()
+      @javaAgent.config.setArg("agent_signature", current_signature)
+    end
+  end
+
   def calcSpeed(previousSpeed)
     currentTime = getCurrentTime()
+    agent_id = @javaAgent.getID().to_s
+    ensure_fresh_config(@javaAgent.getID().to_s)
+    init_speed_factor()
+    speed_factor = PhysicsBlackboard.instance.get_speed_factor(agent_id)
     
-    _speed = calcSpeedBody(previousSpeed,currentTime)
+    _speed = calcSpeedBody(previousSpeed, currentTime, speed_factor)
 
-    _speed = @javaAgent.currentPlace.getLink().calcRestrictedSpeed(_speed,@javaAgent,currentTime)
+    _speed = @javaAgent.currentPlace.getLink().calcRestrictedSpeed(_speed, @javaAgent, currentTime)
   
     deltaDistance = _speed * currentTime.getTickUnit()
 
@@ -53,16 +93,20 @@ class Test < RubyAgentBase
     
     telemetry_data = {
       pressure: @last_crush_pressure,
-      speed: _speed
+      speed: _speed,
+      empty_speed: @desired_empty_speed,
     }
-    TelemetryHandler.update_telemetry(@javaAgent, telemetry_data)
+    TelemetryHandler.update_telemetry(@javaAgent, telemetry_data,currentTime)
 
     return _speed
   end
 
-  def calcSpeedBody(previousSpeed,currentTime)
-    baseSpeed = @javaAgent.currentPlace.getLink().calcEmptySpeedForAgent(getEmptySpeed(), @javaAgent, currentTime)
-    agentID = getAgentId()
+  def calcSpeedBody(previousSpeed, currentTime, speed_factor)
+    # Scale default link empty speed by the agent's individual factor
+    desired_empty_speed = getEmptySpeed() * speed_factor
+    @desired_empty_speed = desired_empty_speed
+    baseSpeed = @javaAgent.currentPlace.getLink().calcEmptySpeedForAgent(desired_empty_speed, @javaAgent, currentTime)
+    agentID = @javaAgent.getID().to_s
 
     accel = calcAccel(baseSpeed, previousSpeed, currentTime)
     PhysicsBlackboard.instance.log_accel(agentID, accel)
@@ -77,22 +121,17 @@ class Test < RubyAgentBase
       linkID = getCurrentLinkId()
       wantedBackDist = _speed * currentTime.getTickUnit()
 
-      # 1. Find the closest agent directly behind us
       sameLane = @javaAgent.currentPlace.getLane()
       closest_agent_behind = nil
       min_dist_behind = Float::INFINITY
 
       sameLane.each do |other_agent|
-        # Ignore normal ghosts, but acknowledge crushed bodies
         if other_agent.isGhost()
           next unless other_agent.hasTag("crushed")
         end
-        # Don't check against ourselves
         next if other_agent.getID() == agentID
 
         other_pos = other_agent.currentPlace.getAdvancingDistance()
-        
-        # Check if they are strictly behind us
         if other_pos < distanceFromStart
           dist_behind = distanceFromStart - other_pos
           if dist_behind < min_dist_behind
@@ -102,42 +141,26 @@ class Test < RubyAgentBase
         end
       end
 
-      # 2. Calculate our maximum allowed backward travel distance
-      availableBackDist = -distanceFromStart # Default limit: start of the link
+      availableBackDist = -distanceFromStart
       limit_from_agent = -Float::INFINITY
 
       if closest_agent_behind
-        # Calculate the exact gap minus our physical space requirement
         gap = min_dist_behind - @physicalSpace
-        gap = 0.0 if gap < 0.0 # Clamp to 0 if we are already dangerously overlapping
-        
-        # Available distance is negative because we are moving backward
+        gap = 0.0 if gap < 0.0
         limit_from_agent = -gap
-        
-        # Take the most restrictive (closest to 0) boundary
         availableBackDist = [availableBackDist, limit_from_agent].max
       end
 
-      # 3. Apply Boundary and Log Collision
       if wantedBackDist < availableBackDist
-        # We hit a physical boundary! Clamp speed exactly to the collision point.
         _speed = availableBackDist / currentTime.getTickUnit()
         
-        # 4. Blackboard Registration (Did we hit a person, or just the wall?)
         if closest_agent_behind && availableBackDist == limit_from_agent
-          # Register the physical shockwave!
           PhysicsBlackboard.instance.register_push(
             agentID, 
             closest_agent_behind.getID(), 
             accel, 
             currentTime
           )
-          
-          # Optional: log the impact to the console for debugging
-          puts "[CRUSH IMPACT] #{agentID} shoved backward into #{closest_agent_behind.getID()}!"
-        else
-          # Pinned against the start of the link
-          puts "back TO start #{agentID} from linkID #{linkID}:#{distanceFromStart}\n\n"
         end
       end
     end
@@ -412,7 +435,7 @@ class Test < RubyAgentBase
     # ---------------------------------------------------------
     # Optional debug print to monitor exactly how much force is getting through
     if final_crush_pressure > 0
-      puts "Agent #{@javaAgent.getID()} is feeling #{final_crush_pressure}N of combined crush pressure!"
+      puts "Agent #{@javaAgent.getID()} is feeling #{final_crush_pressure}N of combined crush pressure!Time: #{currentTime}s"
     end
 
     #check with the threshold to see if crushed

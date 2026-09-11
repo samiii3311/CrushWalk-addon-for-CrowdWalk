@@ -109,6 +109,26 @@ public class DynamicAgentLogger {
 
     public void log(AgentBase agent, SimTime time) {
         if (writer != null && agent != null) {
+
+            // --- Skip agents whose config was never written, or wasn't
+            //     refreshed this tick (stale / recycled object guard) ---
+            if (agent.config == null) {
+                return;
+            }
+            Object lastTickObj = agent.config.getArg("last_telemetry_tick");
+            long currentTick = (long) time.getRelativeTime();
+            if (lastTickObj == null) {
+                return;
+            }
+            try {
+                if (Long.parseLong(lastTickObj.toString()) != currentTick) {
+                    return;
+                }
+            } catch (NumberFormatException e) {
+                return;
+            }
+            // -----------------------------------------------------------
+
             StringBuilder row = new StringBuilder();
             row.append((int)time.getRelativeTime()).append(",");
             row.append((int)agent.generatedTime.getRelativeTime()).append(",");
@@ -141,7 +161,6 @@ public class DynamicAgentLogger {
     }
 }
 '''
-
 
 def apply_agent_base():
     p = find_file("AgentBase.java")

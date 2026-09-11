@@ -1,14 +1,18 @@
 {
- "map_file": "1OneWay.xml",
+ "map_file": "2Turn.xml",
  "generation_file": "gen.json",
  "scenario_file": "scenario.json",
  "crushThreshold": 3000.0,
  "individual_pedestrians_log_dir": "/mnt/ssd_2tb/log-sep09/1OneWay",
+ "randseed": 12345,
  "dynamic_logging": {
         "file": "/mnt/ssd_2tb/log-sep09/fieldsTest.csv",
         "fields": [
             "crush_pressure",
-            "current_speed"
+            "current_speed",
+            "empty_speed",
+            "agent_status"
+            // status: 0 = normal, 1 = crushed
         ]
     },
  "agent_size": 5.0,

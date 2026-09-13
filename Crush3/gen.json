@@ -2,9 +2,5 @@
 
 [
   {"rule":"RANDOM",  "agentType":{"className":"RubyAgent","rubyAgentClass":"Test","weight": -0.0,"trail":0.0,"margin":0.0},
-  "total":2000,"startPlace":"Spawn","conditions":null,"startTime":"18:30:00","duration":5.0,"goal":"GOAL"},
-  {"rule":"RANDOM",  "agentType":{"className":"RubyAgent","rubyAgentClass":"Test","weight": -0.0,"trail":0.0,"margin":0.0},
-  "total":1,"startPlace":"Spawn","conditions":null,"startTime":"18:00:00","duration":5.0,"goal":"GOAL"},
-  {"rule":"RANDOM",  "agentType":{"className":"RubyAgent","rubyAgentClass":"Test","weight": -0.0,"trail":0.0,"margin":0.0},
-  "total":200,"startPlace":"Spawn","conditions":null,"startTime":"18:23:00","duration":5.0,"goal":"GOAL"}
+  "total":2000,"startPlace":"Spawn","conditions":null,"startTime":"18:30:00","duration":5.0,"goal":"GOAL"}
 ]

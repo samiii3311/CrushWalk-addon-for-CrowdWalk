@@ -342,8 +342,10 @@ class Test < RubyAgentBase
   end
 
   def calcPhysical(physicalAgent, currentTime)
-    return 0.0 if physicalAgent.empty?
-
+    if physicalAgent.empty?
+      @last_crush_pressure = 0.0
+      return 0.0
+    end
     
     raw_net_force_x = 0.0
     raw_crush_pressure = 0.0
@@ -454,10 +456,6 @@ class Test < RubyAgentBase
     # Fetch agent-specific SFM parameters from the Java core
     empty_speed = getEmptySpeed()
     
-    # Fetch properties (matching your initialize method)
-    props = getSimulator().getProperties()
-    personal_space = props.getDouble("@personalSpace", 2.0 * 0.522)
-
     socialAgent.each do |data|
       dx = data[:dx]
       dy = data[:dy]
@@ -478,7 +476,7 @@ class Test < RubyAgentBase
       # ---------------------------------------------------------
       # This matches the Java core logic. It always yields a negative 
       # value, pushing the agent's acceleration backwards (deceleration).
-      repulsion = -empty_speed * @a1 * Math.exp(@a2 * (personal_space - dist))
+      repulsion = -empty_speed * @a1 * Math.exp(@a2 * (@personalSpace - dist))
       
       totalCrossingForce += repulsion
 

@@ -14,17 +14,19 @@ end
     pressure     = physics_data[:pressure]     || 9999
     speed        = physics_data[:speed]        || 9999
     empty_speed  = physics_data[:empty_speed]  || 9999
-    net_force    = physics_data[:net_force]    || 0.0       
-    link_id      = physics_data[:link_id]      || ""         
+    net_force    = physics_data[:net_force]    || 0.0
+    social_force = physics_data[:social_force] || 0.0
+    link_id      = physics_data[:link_id]      || ""
     position     = physics_data[:position]     || 0.0        
     blocked_by   = physics_data[:blocked_by]   || ""
 
     config.setArg("link_id", link_id)
     config.setArg("position", position)
-    config.setArg("crush_pressure", pressure.round(2).to_s)
+    config.setArg("compression_pressure", pressure.round(2).to_s)
     config.setArg("current_speed", speed.round(3).to_s)
     config.setArg("empty_speed", empty_speed.round(3).to_s)
-    config.setArg("net_force", net_force.round(3).to_s)
+    config.setArg("push_force", net_force.round(3).to_s)
+    config.setArg("social_force", social_force.round(3).to_s)
     config.setArg("blocked_by", blocked_by)
     config.setArg("agent_status", agent.hasTag("crushed") ? "1" : "0")
 

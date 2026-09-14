@@ -36,6 +36,7 @@ class Test < RubyAgentBase
     @push_resistance = props.getDouble("pushResistance", @my_mass * 9.8 * 0.05)  
     @last_crush_pressure = 0.0
     @last_net_force = 0.0
+    @last_social_force = 0.0
     @last_blocked_by = nil
   end
 
@@ -99,8 +100,9 @@ class Test < RubyAgentBase
       speed: _speed,
       empty_speed: @desired_empty_speed,
       net_force: @last_net_force,
+      social_force: @last_social_force,
       link_id: getCurrentLinkId(),
-      position: @javaAgent.getPosition().toString(),
+      position: @javaAgent.getPositionOnLink(),
       blocked_by: @last_blocked_by
     }
     TelemetryHandler.update_telemetry(@javaAgent, telemetry_data,currentTime)
@@ -202,6 +204,7 @@ class Test < RubyAgentBase
       physicalForce = calcPhysical(physicalAgent,currentTime)
 
       socialForce = calcSocial(socialAgent,lowerBound,totalCrossingForce)
+      @last_social_force = socialForce
 
       _accel += (physicalForce + socialForce)
 

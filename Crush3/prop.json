@@ -9,17 +9,19 @@
         "fields": [
         "link_id",
         "position",
-        "crush_pressure",
+        "compression_pressure",
         "current_speed",
         "empty_speed",
-        "net_force",
+        "push_force",
+        "social_force",
         "blocked_by",
         "agent_status"
             // status: 0 = normal, 1 = crushed
         ]
     },
     "link_logging": {
-    "file": "/mnt/ssd_2tb/log-sep14/linkMetrics.csv"
+    "file": "/mnt/ssd_2tb/log-sep14/linkMetrics.csv",
+    "fields": ["push_force", "social_force", "compression_pressure"]
     },
     "crushThreshold":1.0,
     "simulation_step_time": 1,

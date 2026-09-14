@@ -103,9 +103,9 @@ def build_query(telemetry_source: str, horizon: int, trend_window: int, scenario
             COUNT(*) AS agent_count,
             AVG(current_speed) AS mean_speed,
             COALESCE(STDDEV(current_speed), 0.0) AS std_speed,
-            AVG(net_force) AS mean_net_force,
-            MAX(net_force) AS max_net_force,
-            MAX(crush_pressure) AS max_crush_pressure,
+            AVG(push_force) AS mean_push_force,
+            MAX(push_force) AS max_push_force,
+            MAX(compression_pressure) AS max_compression_pressure,
             COALESCE(MAX(agent_status), 0) AS crush_now,
             SUM(CASE WHEN ABS(current_speed) < {STATIONARY_EPS} THEN 1 ELSE 0 END) AS queue_count
         FROM {telemetry_source}

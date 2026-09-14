@@ -177,14 +177,18 @@ import nodagumi.Itk.Term;
 public class LinkAggregateLogger {
     private PrintWriter writer = null;
     private static final double STATIONARY_EPS = 0.02;
+    // Which agent.config fields to aggregate, driven by link_logging.fields
+    // in properties.json -- add/rename/remove a field there (and set it from
+    // Ruby via config.setArg) with no Java rebuild needed.
+    private List<String> fields = new ArrayList<>();
 
     private static class LinkAccumulator {
         int count = 0;
         double speedSum = 0.0, speedSumSq = 0.0;
-        double forceSum = 0.0, forceMax = 0.0;
-        double crushPressureMax = 0.0;
         int crushNow = 0;
         int queueCount = 0;
+        Map<String, Double> fieldSum = new HashMap<>();
+        Map<String, Double> fieldMax = new HashMap<>();
     }
 
     private Map<String, LinkAccumulator> tickAccum = new HashMap<>();
@@ -195,6 +199,13 @@ public class LinkAggregateLogger {
     public void init(Term config) {
         if (config == null) return;
 
+        Term fieldListTerm = config.getArgTerm("fields");
+        if (fieldListTerm != null && fieldListTerm.isArray()) {
+            for (int i = 0; i < fieldListTerm.getArraySize(); i++) {
+                fields.add(fieldListTerm.getNthTerm(i).getString());
+            }
+        }
+
         String filename = config.getArgString("file");
         if (filename == null) filename = "link_metrics.csv";
 
@@ -204,8 +215,13 @@ public class LinkAggregateLogger {
             if (dir != null && !dir.exists()) dir.mkdirs();
 
             this.writer = new PrintWriter(new FileOutputStream(file), true);
-            writer.println("current_traveling_period,link_id,agent_count,mean_speed,std_speed," +
-                            "mean_net_force,max_net_force,max_crush_pressure,crush_now,queue_count");
+            StringBuilder header = new StringBuilder(
+                "current_traveling_period,link_id,agent_count,mean_speed,std_speed");
+            for (String field : fields) {
+                header.append(",mean_").append(field).append(",max_").append(field);
+            }
+            header.append(",crush_now,queue_count");
+            writer.println(header.toString());
             Itk.logInfo("Link Aggregate Logger initialized", filename);
         } catch (Exception e) {
             Itk.logError("Link Aggregate Logger Init Error", e.getMessage());
@@ -229,17 +245,19 @@ public class LinkAggregateLogger {
         if (linkId == null || linkId.isEmpty()) return;
 
         double speed = parseDouble(agent.config.getArg("current_speed"));
-        double force = parseDouble(agent.config.getArg("net_force"));
-        double pressure = parseDouble(agent.config.getArg("crush_pressure"));
         boolean crushed = agent.hasTag("crushed");
 
         LinkAccumulator acc = tickAccum.computeIfAbsent(linkId, k -> new LinkAccumulator());
         acc.count++;
         acc.speedSum += speed;
         acc.speedSumSq += speed * speed;
-        acc.forceSum += force;
-        acc.forceMax = Math.max(acc.forceMax, Math.abs(force));
-        acc.crushPressureMax = Math.max(acc.crushPressureMax, pressure);
+
+        for (String field : fields) {
+            double val = parseDouble(agent.config.getArg(field));
+            acc.fieldSum.merge(field, val, Double::sum);
+            acc.fieldMax.merge(field, Math.abs(val), Math::max);
+        }
+
         if (crushed) acc.crushNow = 1;
         if (Math.abs(speed) < STATIONARY_EPS) acc.queueCount++;
     }
@@ -254,12 +272,19 @@ public class LinkAggregateLogger {
             double meanSpeed = acc.speedSum / acc.count;
             double variance = (acc.speedSumSq / acc.count) - (meanSpeed * meanSpeed);
             double stdSpeed = variance > 0 ? Math.sqrt(variance) : 0.0;
-            double meanForce = acc.forceSum / acc.count;
 
-            writer.println(period + "," + linkId + "," + acc.count + "," +
-                round(meanSpeed) + "," + round(stdSpeed) + "," +
-                round(meanForce) + "," + round(acc.forceMax) + "," +
-                round(acc.crushPressureMax) + "," + acc.crushNow + "," + acc.queueCount);
+            StringBuilder row = new StringBuilder();
+            row.append(period).append(",").append(linkId).append(",").append(acc.count).append(",")
+               .append(round(meanSpeed)).append(",").append(round(stdSpeed));
+
+            for (String field : fields) {
+                double mean = acc.fieldSum.getOrDefault(field, 0.0) / acc.count;
+                double max = acc.fieldMax.getOrDefault(field, 0.0);
+                row.append(",").append(round(mean)).append(",").append(round(max));
+            }
+
+            row.append(",").append(acc.crushNow).append(",").append(acc.queueCount);
+            writer.println(row.toString());
         }
         tickAccum.clear();
     }

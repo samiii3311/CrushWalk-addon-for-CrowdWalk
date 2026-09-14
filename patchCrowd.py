@@ -162,6 +162,132 @@ public class DynamicAgentLogger {
 }
 '''
 
+LINK_AGGREGATE_LOGGER_SRC = r'''package nodagumi.ananPJ.Simulator;
+
+import java.util.*;
+import java.io.PrintWriter;
+import java.io.FileOutputStream;
+import java.io.File;
+
+import nodagumi.ananPJ.Agents.AgentBase;
+import nodagumi.ananPJ.misc.SimTime;
+import nodagumi.Itk.Itk;
+import nodagumi.Itk.Term;
+
+public class LinkAggregateLogger {
+    private PrintWriter writer = null;
+    private static final double STATIONARY_EPS = 0.02;
+
+    private static class LinkAccumulator {
+        int count = 0;
+        double speedSum = 0.0, speedSumSq = 0.0;
+        double forceSum = 0.0, forceMax = 0.0;
+        double crushPressureMax = 0.0;
+        int crushNow = 0;
+        int queueCount = 0;
+    }
+
+    private Map<String, LinkAccumulator> tickAccum = new HashMap<>();
+    private int currentPeriod = Integer.MIN_VALUE;
+
+    public LinkAggregateLogger(AgentHandler handler) {}
+
+    public void init(Term config) {
+        if (config == null) return;
+
+        String filename = config.getArgString("file");
+        if (filename == null) filename = "link_metrics.csv";
+
+        try {
+            File file = new File(filename);
+            File dir = file.getParentFile();
+            if (dir != null && !dir.exists()) dir.mkdirs();
+
+            this.writer = new PrintWriter(new FileOutputStream(file), true);
+            writer.println("current_traveling_period,link_id,agent_count,mean_speed,std_speed," +
+                            "mean_net_force,max_net_force,max_crush_pressure,crush_now,queue_count");
+            Itk.logInfo("Link Aggregate Logger initialized", filename);
+        } catch (Exception e) {
+            Itk.logError("Link Aggregate Logger Init Error", e.getMessage());
+        }
+    }
+
+    // Called once PER AGENT, at the SAME call site as DynamicAgentLogger.log().
+    // Detects tick boundaries itself (by watching current_traveling_period change),
+    // so no separate per-tick flush call is needed anywhere else in AgentHandler.
+    public void accumulate(AgentBase agent, SimTime time) {
+        if (writer == null || agent == null || agent.config == null) return;
+
+        int period = (int) time.getRelativeTime();
+        if (currentPeriod != Integer.MIN_VALUE && period != currentPeriod) {
+            flushPeriod(currentPeriod);
+        }
+        currentPeriod = period;
+
+        Object linkIdObj = agent.config.getArg("link_id");
+        String linkId = linkIdObj != null ? linkIdObj.toString() : null;
+        if (linkId == null || linkId.isEmpty()) return;
+
+        double speed = parseDouble(agent.config.getArg("current_speed"));
+        double force = parseDouble(agent.config.getArg("net_force"));
+        double pressure = parseDouble(agent.config.getArg("crush_pressure"));
+        boolean crushed = agent.hasTag("crushed");
+
+        LinkAccumulator acc = tickAccum.computeIfAbsent(linkId, k -> new LinkAccumulator());
+        acc.count++;
+        acc.speedSum += speed;
+        acc.speedSumSq += speed * speed;
+        acc.forceSum += force;
+        acc.forceMax = Math.max(acc.forceMax, Math.abs(force));
+        acc.crushPressureMax = Math.max(acc.crushPressureMax, pressure);
+        if (crushed) acc.crushNow = 1;
+        if (Math.abs(speed) < STATIONARY_EPS) acc.queueCount++;
+    }
+
+    private void flushPeriod(int period) {
+        if (writer == null) return;
+        for (Map.Entry<String, LinkAccumulator> entry : tickAccum.entrySet()) {
+            String linkId = entry.getKey();
+            LinkAccumulator acc = entry.getValue();
+            if (acc.count == 0) continue;
+
+            double meanSpeed = acc.speedSum / acc.count;
+            double variance = (acc.speedSumSq / acc.count) - (meanSpeed * meanSpeed);
+            double stdSpeed = variance > 0 ? Math.sqrt(variance) : 0.0;
+            double meanForce = acc.forceSum / acc.count;
+
+            writer.println(period + "," + linkId + "," + acc.count + "," +
+                round(meanSpeed) + "," + round(stdSpeed) + "," +
+                round(meanForce) + "," + round(acc.forceMax) + "," +
+                round(acc.crushPressureMax) + "," + acc.crushNow + "," + acc.queueCount);
+        }
+        tickAccum.clear();
+    }
+
+    private double parseDouble(Object val) {
+        if (val == null) return 0.0;
+        try { return Double.parseDouble(val.toString()); }
+        catch (NumberFormatException e) { return 0.0; }
+    }
+
+    private double round(double v) {
+        return Math.round(v * 1000.0) / 1000.0;
+    }
+
+    public void close() {
+        if (currentPeriod != Integer.MIN_VALUE) {
+            flushPeriod(currentPeriod);
+        }
+        if (writer != null) {
+            writer.flush();
+            writer.close();
+            writer = null;
+        }
+        Itk.logInfo("Link Logger", "Logger Finished");
+    }
+}
+'''
+
 def apply_agent_base():
     p = find_file("AgentBase.java")
     if not p:
@@ -395,6 +521,36 @@ def apply_agent_handler():
     p.write_text(txt + crushed_methods, encoding="utf-8")
     print("[+] Successfully patched: AgentHandler.java (crush methods)")
 
+def apply_link_logger():
+    patch_file_exact(
+        "AgentHandler.java",
+        search="private DynamicAgentLogger dynamicLogger = new DynamicAgentLogger(this);",
+        replace="private DynamicAgentLogger dynamicLogger = new DynamicAgentLogger(this);\n"
+                "    private LinkAggregateLogger linkLogger = new LinkAggregateLogger(this);",
+        marker="private LinkAggregateLogger linkLogger",
+    )
+
+    patch_file_exact(
+        "AgentHandler.java",
+        search="dynamicLogger.log(agent, currentTime);",
+        replace="dynamicLogger.log(agent, currentTime);\n                linkLogger.accumulate(agent, currentTime);",
+        marker="linkLogger.accumulate(agent, currentTime)",
+    )
+
+    patch_file_exact(
+        "AgentHandler.java",
+        search='dynamicLogger.init(simulator.getProperties().getTerm("dynamic_logging"));',
+        replace='dynamicLogger.init(simulator.getProperties().getTerm("dynamic_logging"));\n'
+                '        linkLogger.init(simulator.getProperties().getTerm("link_logging"));',
+        marker="linkLogger.init(",
+    )
+
+    patch_file_exact(
+        "AgentHandler.java",
+        search="dynamicLogger.close();",
+        replace="dynamicLogger.close();\n        linkLogger.close();",
+        marker="linkLogger.close();",
+    )
 
 def apply_simulator_and_launcher():
     # EvacuationSimulator.java
@@ -493,10 +649,16 @@ def main():
         target_logger.write_text(DYNAMIC_AGENT_LOGGER_SRC.strip() + "\n", encoding="utf-8")
         print(f"[+] Created/Updated: {target_logger.relative_to(REPO_DIR)}")
 
+
+        target_link_logger = handler_path.parent / "LinkAggregateLogger.java"   # NEW
+        target_link_logger.write_text(LINK_AGGREGATE_LOGGER_SRC.strip() + "\n", encoding="utf-8")
+        print(f"[+] Created/Updated: {target_link_logger.relative_to(REPO_DIR)}")
+
     # 2. Apply all patches with strict guards
     apply_agent_base()
     apply_walk_agent()
     apply_agent_handler()
+    apply_link_logger()
     apply_simulator_and_launcher()
 
     # 3. Build JAR

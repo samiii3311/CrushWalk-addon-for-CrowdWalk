@@ -1,117 +1,107 @@
+# CrushWalk: physical crowd pressure and crush dynamics addon for CrowdWalk
 
-# CrushWalk: Physical Crowd Pressure & Crush Dynamics Addon for CrowdWalk
+CrushWalk is an experimental addon for the [CrowdWalk](https://github.com/crest-cassia/CrowdWalk) pedestrian simulator. It patches the core Java engine to add social-force pressure accumulation, ghost-agent collision handling, and per-tick telemetry, then layers Ruby-side agent scripts on top for the physics model itself.
 
-**CrushWalk** is an experimental physics and telemetry addon for the [CrowdWalk](https://github.com/crest-cassia/CrowdWalk) pedestrian simulation framework. It extends default navigation behavior with realistic physical interaction, side-force pressure accumulation, dynamic bottleneck resistance, and crowd crush/stuck telemetry.
+## What it adds
 
----
+CrowdWalk agents normally block each other on a lane. CrushWalk adds two boolean flags to `AgentBase`, `allowOverlap` and `ghostMode`. When `ghostMode` is set, `WalkAgent.calcSocialForce`, `calcSocialForceToHeading`, and `accumulateSocialForces` all short-circuit to `0.0`, and `AgentHandler`'s same-lane predecessor search skips the agent entirely. That is the mechanism a ghost agent uses to pass through a jam without contributing to it or blocking anyone else. The Ruby side handles the actual physics: `GhostAgentManager.rb` (in `Crush2/`, `Crush3/`, `CrushTesting/`, and `Test/`) decides when an agent should become a ghost and tracks a shared blackboard of pressure state.
 
-## Key Features
+`AgentHandler` also gains two loggers, generated and wired in by the patcher:
 
-* **Physical Force & Side Pressure Modeling:** Extends agent interaction to evaluate physical constraints, bottleneck densities, and force thresholds beyond standard 1D lane progression.
-* **Ghost Agent Mechanics:** Manages overlapping and non-colliding agent states (`GhostAgent`, `GhostAgentManager`) to realistically resolve complex bottleneck jams and casualty dynamics.
-* **Automated Source Patcher (`patchCrowd.py`):** Automatically injects Java bytecode hooks into CrowdWalk (`AgentBase`, `WalkAgent`, `AgentHandler`, `BasicSimulationLauncher`), adds `DynamicAgentLogger.java`, and recompiles the core engine.
-* **Comprehensive Telemetry & Logging:** Logs granular agent data (speed, force, link ID, nodes, timestamps, and crushed states) via `TelemetryHandler.rb` and `DynamicAgentLogger`.
-* **GPS Data Integration (`gpxToCsv.py`):** Converts real-world GPX trace logs into CrowdWalk-compatible CSV coordinate datasets for empirical trajectory validation.
-* **Extensive Benchmark Suite (`CrushTesting/`):** Pre-configured test scenarios for one-way corridors, turns, narrow entrances, wide exits, busy paths, 2-way crossroads, 4-way crossroads, and random motion.
+- `DynamicAgentLogger` writes per-tick CSV rows (position, speed, force, crushed state) for whatever fields a scenario's `properties.json` lists under `dynamic_logging.fields`.
+- `LinkAggregateLogger` writes link-level aggregates over the same run.
 
----
+`EvacuationSimulator` and `BasicSimulationLauncher` are patched so the crushed/evacuated counts show up in the exit condition and the run's console summary.
 
-## Repository Structure
+## Repository structure
 
-CrushWalk/
-├── Crush2/              # Intermediate Ruby-agent prototype and scenarios
-├── Crush3/              # Advanced blackboard architecture & physics tests
-├── CrushTest/           # Standard integration test setup and plotting utilities
-├── CrushTesting/        # Comprehensive benchmark maps & XML topologies:
-│   ├── 1OneWay.xml      # Single-direction bottleneck corridor
-│   ├── 2Turn.xml        # Sharp turn bottleneck
-│   ├── 3SmallEnter.xml  # Funnel/narrow entrance topology
-│   ├── 4BigExit.xml     # Constrained entry with wide dissipation exit
-│   ├── 5BusyPath.xml    # Bidirectional high-density pathway
-│   ├── 6Crossroad2way.xml # 2-way intersecting corridor
-│   └── 7Crossroad4way.xml # 4-way intersection gridlock test
-├── Test/                # Real-world test maps (e.g., HigashiKU) & generation configs
-├── patchCrowd.py        # Automated Java hook injector and Gradle builder
-├── run.py               # Batch execution runner
-└── gpxToCsv.py          # GPX trace parser to CrowdWalk CSV format
+```
+crowdwalk/
+├── Crush2/              Intermediate Ruby agent prototype and scenarios
+├── Crush3/              Blackboard-architecture prototype and physics tests
+├── CrushTest/           Integration test setup and plotting utilities
+├── CrushTesting/        Runnable benchmark scenarios: 8 map topologies
+│                        (1OneWay.xml … 8RandomMovement.xml, covering one-way
+│                        corridors, turns, funnels, crossroads, and random
+│                        motion) plus the Ruby agent scripts, gen/prop/scenario
+│                        JSON, and a code.py utility needed to actually run them
+├── Test/                Real-world map (Higashiv2.xml) and its gen/prop/
+│                        scenario configs
+├── patchCrowd.py        Patcher: string-anchored search/replace, generates
+│                        DynamicAgentLogger.java and LinkAggregateLogger.java,
+│                        builds with Gradle
+├── run.py               Batch parameter-sweep runner and plotter (hardcodes
+│                        a Linux path and output directory; edit both before
+│                        running on this machine)
+└── gpxToCsv.py          Converts a GPX trace to CrowdWalk-compatible CSV
+```
 
----
+## Setup
 
-## Getting Started
+### Requirements
 
-### Prerequisites
+- JDK 17 (the build is pinned to it via `org.gradle.java.home` in `gradle.properties`, regardless of what else is installed)
+- Python 3.8+
+- CrowdWalk cloned locally, with `build.gradle` reachable from the current or parent directory (the patcher uses that to find the repo root)
 
-* **Java JDK:** OpenJDK / Oracle JDK 17+ (or 21+)
-* **Python:** 3.8+
-* **JRuby / Ruby:** Embedded with CrowdWalk
-* **CrowdWalk:** Cloned and accessible locally
+### Environment variables
 
-### Installation & Patching
+CrowdWalk needs these set before `quickstart.sh` or a Gradle run will behave correctly:
 
-1. Place the `CrushWalk` files in your workspace or inside your CrowdWalk repository.
-2. Run the patcher script to inject custom hooks into CrowdWalk's Java source code and rebuild the project:
+```
+LANG=ja_JP.UTF-8
+JAVA_OPTS='-Dgroovy.source.encoding=UTF-8 -Dfile.encoding=UTF-8'
+```
 
+### Patching and building
+
+Run the patcher from the `crowdwalk/` directory:
+
+```
 python patchCrowd.py
+```
 
-This automatically locates CrowdWalk files, generates `DynamicAgentLogger.java`, modifies agent collision rules, adjusts the simulation exit condition, fixes launcher scripts, and executes `./gradlew build -x test`.
+It is idempotent: each patch is guarded by a marker string, so re-running it after it has already applied a change is a no-op. It finishes by running `./gradlew compileJava jar -x test -x check`, the same fast-rebuild command to use directly after any further hand-edit to the patched files.
 
----
+If you hand-edit a file under a `// === Custom: ... ===` block, you have desynced it from the patcher's anchors. Update the corresponding `search=`/`replace=` string in `patchCrowd.py` instead of leaving the `.java` file as the only copy of the change.
 
-## Dynamic Telemetry & Custom Logging Pipeline
+## Adding a custom telemetry field
 
-CrushWalk uses a runtime-decoupled logging architecture. The compiled Java engine acts as an agnostic data pipeline, meaning **you can track new physical properties or custom metrics without recompiling Java or rebuilding the project with Gradle.**
+`DynamicAgentLogger` reads whatever field names a scenario asks for, so a new per-agent metric does not need a Java rebuild:
 
-### How to Log Your Own Variables
+1. Compute the value in the agent script, `PhysicalAgent.rb`.
+2. Pass it into `TelemetryHandler.rb` during the per-tick update.
+3. Map it to an output key inside `TelemetryHandler.rb`.
+4. Add that key to the `dynamic_logging.fields` array in the scenario's `properties.json`.
 
-To record custom agent variables (such as custom density models, stamina, stress, or lane deviations), follow this 4-step workflow:
+CrowdWalk picks up the new column in `dynamic_metrics.csv` automatically on the next run.
 
-1. **Calculate the Metric in Your Agent Script (`PhysicalAgent.rb`):**
-Define or calculate your custom mathematical variable during the agent's per-tick update routine based on the current simulation state.
-2. **Send the Value to the Telemetry Bridge (`TelemetryHandler.rb`):**
-Pass your calculated metric dictionary to the telemetry updater during each step.
-3. **Map the Variable to an Output Key (`TelemetryHandler.rb`):**
-Inside the telemetry handler, assign your variable to the agent's configuration object under a specific key name (e.g., `"my_custom_metric"`).
-4. **Declare the Key in Your Scenario Properties (`properties.json`):**
-Add the exact string name of your new key to the `fields` array inside the `dynamic_logging` block in your simulation properties file.
+## Running simulations
 
-When CrowdWalk starts, the logger automatically creates a matching column header in `dynamic_metrics.csv`, queries each agent for that key on every tick, and records the live data to disk.
+A single scenario, through CrowdWalk's own launcher:
 
----
-
-## Running Simulations
-
-### Running a Single Experiment
-
-Execute any benchmark configuration using CrowdWalk's launcher:
-
+```
 sh quickstart.sh ./CrushTesting/prop.json -g2
+```
 
-### Running Batch Automation
+A parameter sweep across multiple runs (edit the hardcoded paths in `run.py` first):
 
-Use the batch controller script to run multiple parameter sweeps:
-
+```
 python run.py
+```
 
+A GPX trace converted to model coordinates:
 
-### Processing GPX Field Data
-
-Convert empirical GPS tracker traces to model coordinates:
-
+```
 python gpxToCsv.py input_track.gpx output_coordinates.csv
+```
 
+## Output
 
----
+- `log_crushed_agents.csv`: timestamp, agent ID, link, and node coordinates for each crush-threshold breach.
+- `dynamic_metrics.csv`: per-tick position, speed, and force/compression for every agent, plus any custom fields declared in `properties.json`.
 
-## Telemetry Output
+## Notes
 
-The addon logs agent metrics to CSV for analysis:
-
-* `log_crushed_agents.csv`: Timestamps, agent IDs, links, and node coordinates recorded when physical crush thresholds are breached.
-* `dynamic_metrics.csv`: Per-tick continuous time-series recording agent coordinates, speeds, physical force/compression values, and any custom fields declared in `properties.json`.
-
----
-
-# Notes
-
-* **Work in Progress:** This repository is actively under development as of September 2026.
-* **AI Assistance:** Portions of the code and documentation in this repository were developed with AI assistance.
+- `crowdwalk/.gitignore` denies everything by default and only allowlists `*[Cc]rush*` paths plus root-level `.json`/`.rb`/`.py`/`.xml` files. A new file added under `src/`, `test/`, `sample/`, or `tools/` needs `git add -f` or it will silently stay untracked.
+- This addon is under active development as of September 2026. Parts of the code and this document were written with AI assistance.

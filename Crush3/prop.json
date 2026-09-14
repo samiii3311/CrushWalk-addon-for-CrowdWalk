@@ -5,14 +5,21 @@
    // "agent_appearance_file": "agent_appearance.json",
     //"crushed_agents_log_dir": "/mnt/ssd_2tb/log0507",
     "dynamic_logging": {
-         "file": "/mnt/ssd_2tb/log-sep11/fieldsTest.csv",
+         "file": "/mnt/ssd_2tb/log-sep14/fieldsTest.csv",
         "fields": [
-            "crush_pressure",
-            "current_speed",
-            "empty_speed",
-            "agent_status"
+        "link_id",
+        "position",
+        "crush_pressure",
+        "current_speed",
+        "empty_speed",
+        "net_force",
+        "blocked_by",
+        "agent_status"
             // status: 0 = normal, 1 = crushed
         ]
+    },
+    "link_logging": {
+    "file": "/mnt/ssd_2tb/log-sep14/linkMetrics.csv"
     },
     "crushThreshold":1.0,
     "simulation_step_time": 1,

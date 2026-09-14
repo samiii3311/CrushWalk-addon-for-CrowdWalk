@@ -35,6 +35,8 @@ class Test < RubyAgentBase
     @my_resistance = @my_mass * 9.8 * 0.5
     @push_resistance = props.getDouble("pushResistance", @my_mass * 9.8 * 0.05)  
     @last_crush_pressure = 0.0
+    @last_net_force = 0.0
+    @last_blocked_by = nil
   end
 
   def init_speed_factor(mean = 1.0, std = 0.2, min_val = 0.6, max_val = 1.5)
@@ -96,6 +98,10 @@ class Test < RubyAgentBase
       pressure: @last_crush_pressure,
       speed: _speed,
       empty_speed: @desired_empty_speed,
+      net_force: @last_net_force,
+      link_id: getCurrentLinkId(),
+      position: @javaAgent.getPosition().toString(),
+      blocked_by: @last_blocked_by
     }
     TelemetryHandler.update_telemetry(@javaAgent, telemetry_data,currentTime)
 
@@ -108,6 +114,8 @@ class Test < RubyAgentBase
     @desired_empty_speed = desired_empty_speed
     baseSpeed = @javaAgent.currentPlace.getLink().calcEmptySpeedForAgent(desired_empty_speed, @javaAgent, currentTime)
     agentID = @javaAgent.getID().to_s
+
+    @last_blocked_by = nil
 
     accel = calcAccel(baseSpeed, previousSpeed, currentTime)
     PhysicsBlackboard.instance.log_accel(agentID, accel)
@@ -162,11 +170,7 @@ class Test < RubyAgentBase
             accel, 
             currentTime
           )
-           # Optional: log the impact to the console for debugging
-          puts "[CRUSH IMPACT] #{agentID} shoved backward into #{closest_agent_behind.getID()}!"
-        else
-          # Pinned against the start of the link
-          puts "back TO start #{agentID} from linkID #{linkID}:#{distanceFromStart}\n\n"
+           @last_blocked_by = closest_agent_behind.getID()
         end
       end
     end
@@ -441,18 +445,11 @@ class Test < RubyAgentBase
     # ---------------------------------------------------------
     # 5. RESOLVE STATE
     # ---------------------------------------------------------
-    # Optional debug print to monitor exactly how much force is getting through
-    if final_crush_pressure > 0
-      puts "Agent #{@javaAgent.getID()} is feeling #{final_crush_pressure}N of combined crush pressure!Time: #{currentTime}s"
-    end
-    # TEMP DEBUG: verify momentum transfer is happening independently of crush pressure
-    if net_force_x.abs > 0.0
-      puts "PUSH_DEBUG agent=#{@javaAgent.getID()} raw_net=#{raw_net_force_x.round(2)} push_resistance=#{@push_resistance.round(2)} net=#{net_force_x.round(2)} resulting_accel=#{(net_force_x / @my_mass).round(3)}"
-    end
-
     #check with the threshold to see if crushed
+    @last_net_force = net_force_x
     if final_crush_pressure > @crush_threshold
       self.crush_agent!
+      @last_net_force = 0.0
       return 0.0 
     else
       #F = m*a => a = F/m

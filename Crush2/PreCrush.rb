@@ -1,4 +1,4 @@
-class PreCrush < RubyAgentBase
+class PreCrush < PhysicalAgent
   TriggerFilter = ["update"]
 
   def initialize(agent, config, fallback)

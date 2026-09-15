@@ -16,7 +16,6 @@ class Test < RubyAgentBase
 
     props = getSimulator().getProperties()
     @personalSpace = props.getDouble("personalSpace", 2.0 * 0.522)
-    @physicalSpace = props.getDouble("physicalSpace", 0.5)
     @widthUnit_OtherLane = props.getDouble("widthUnit_OtherLane", 0.9)
     @widthUnit_SameLane = props.getDouble("widthUnit_SameLane", 0.9)
     @physicalThreshold = props.getDouble("physicalThreshold", 0.9)
@@ -24,16 +23,21 @@ class Test < RubyAgentBase
     @a0 = props.getDouble("a0", 0.962)
     @a1 = props.getDouble("a1", 0.8497467021796484659)
     @a2 = props.getDouble("a2", 4.682)
-    @body_drag_coefficient = props.getDouble("bodyDrag", 300.0)
-    @crush_threshold = props.getDouble("crushThreshold", 3000.0)
 
     mass_term = ItkTerm.getArg(@fallback, "mass")
     @my_mass = mass_term ? mass_term.getDouble() : 60.0
     PhysicsBlackboard.instance.log_mass(getAgentId(), @my_mass)
+
+    @body_drag_coefficient = props.getDouble("bodyDrag", 0.5 * @my_mass * 9.8)
+
+    # ponytail: need to add a new method to track sustained compression over 4~6 min (Kroll et al. 2017), not just an instant per-tick check
+    @crush_threshold = props.getDouble("crushThreshold", 1112.0)
+
     space_term = ItkTerm.getArg(@fallback, "physicalSpace")
-    @physicalSpace = space_term ? space_term.getDouble() : 0.5 
+    @physicalSpace = space_term ? space_term.getDouble() : props.getDouble("physicalSpace", 0.5)
+
     @my_resistance = @my_mass * 9.8 * 0.5
-    @push_resistance = props.getDouble("pushResistance", @my_mass * 9.8 * 0.05)  
+    @push_resistance = props.getDouble("pushResistance", @my_mass * 9.8 * 0.05)
     @last_crush_pressure = 0.0
     @last_net_force = 0.0
     @last_social_force = 0.0
@@ -42,36 +46,36 @@ class Test < RubyAgentBase
 
   def init_speed_factor(mean = 1.0, std = 0.2, min_val = 0.6, max_val = 1.5)
     agent_id = @javaAgent.getID().to_s
-    
+
     # Return from blackboard if already calculated for this unique agent
     existing_factor = PhysicsBlackboard.instance.get_speed_factor(agent_id)
     return existing_factor if existing_factor
 
     # Trim MD5 hex digest to 8 chars (32-bit int) to prevent massive 128-bit Bignums
     agent_hash = Digest::MD5.hexdigest(agent_id)[0..7].to_i(16)
-    
+
     u1 = [(agent_hash % 100000) / 100000.0, 0.0001].max
-    u2 = (((agent_hash / 100000) % 100000) / 100000.0)
+    u2 = ((agent_hash / 100000) % 100000) / 100000.0
 
     standard_normal = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math::PI * u2)
     factor = [[min_val, mean + (standard_normal * std)].max, max_val].min.round(3)
 
     # Save permanently in the PhysicsBlackboard registry
-    PhysicsBlackboard.instance.set_speed_factor(agent_id, factor) 
+    PhysicsBlackboard.instance.set_speed_factor(agent_id, factor)
     PhysicsBlackboard.instance.set_agent_hash(agent_id, agent_hash)
-    
+
     return factor
   end
-  
+
   def ensure_fresh_config(agent_id)
     return if @config_checked
     @config_checked = true
 
     current_signature = "#{agent_id}:#{@javaAgent.generatedTime.getRelativeTime()}"
-    stored_signature = (@javaAgent.config && @javaAgent.config.respond_to?(:getArgString)) ? @javaAgent.config.getArgString("agent_signature") : nil
+    stored_signature = @javaAgent.config.respond_to?(:getArgString) ? @javaAgent.config.getArgString("agent_signature") : nil
 
-    if @javaAgent.config.nil? || stored_signature != current_signature
-      @javaAgent.config = ItkTerm.newTerm()        # was ItkTerm.new() / Java::nodagumi::Itk::Term.new()
+    if stored_signature != current_signature
+      @javaAgent.config = ItkTerm.newTerm()
       @javaAgent.config.setArg("agent_signature", current_signature)
     end
   end
@@ -79,14 +83,12 @@ class Test < RubyAgentBase
   def calcSpeed(previousSpeed)
     currentTime = getCurrentTime()
     agent_id = @javaAgent.getID().to_s
-    ensure_fresh_config(@javaAgent.getID().to_s)
-    init_speed_factor()
-    speed_factor = PhysicsBlackboard.instance.get_speed_factor(agent_id)
-    
-    _speed = calcSpeedBody(previousSpeed, currentTime, speed_factor)
+    ensure_fresh_config(agent_id)
+    speed_factor = init_speed_factor()
 
+    _speed = calcSpeedBody(previousSpeed, currentTime, speed_factor)
     _speed = @javaAgent.currentPlace.getLink().calcRestrictedSpeed(_speed, @javaAgent, currentTime)
-  
+
     deltaDistance = _speed * currentTime.getTickUnit()
 
     if @javaAgent.currentPlace.isBeyondLinkWithAdvance(deltaDistance)
@@ -94,7 +96,7 @@ class Test < RubyAgentBase
     end
 
     _speed = @javaAgent.obstructer.calcAffectedSpeed(_speed)
-    
+
     telemetry_data = {
       pressure: @last_crush_pressure,
       speed: _speed,
@@ -105,16 +107,15 @@ class Test < RubyAgentBase
       position: @javaAgent.getPositionOnLink(),
       blocked_by: @last_blocked_by
     }
-    TelemetryHandler.update_telemetry(@javaAgent, telemetry_data,currentTime)
+    TelemetryHandler.update_telemetry(@javaAgent, telemetry_data, currentTime)
 
     return _speed
   end
 
   def calcSpeedBody(previousSpeed, currentTime, speed_factor)
     # Scale default link empty speed by the agent's individual factor
-    desired_empty_speed = getEmptySpeed() * speed_factor
-    @desired_empty_speed = desired_empty_speed
-    baseSpeed = @javaAgent.currentPlace.getLink().calcEmptySpeedForAgent(desired_empty_speed, @javaAgent, currentTime)
+    @desired_empty_speed = getEmptySpeed() * speed_factor
+    baseSpeed = @javaAgent.currentPlace.getLink().calcEmptySpeedForAgent(@desired_empty_speed, @javaAgent, currentTime)
     agentID = @javaAgent.getID().to_s
 
     @last_blocked_by = nil
@@ -122,33 +123,28 @@ class Test < RubyAgentBase
     accel = calcAccel(baseSpeed, previousSpeed, currentTime)
     PhysicsBlackboard.instance.log_accel(agentID, accel)
 
-    deltaSpeed = accel * currentTime.getTickUnit()
-    _speed = previousSpeed + deltaSpeed
+    _speed = previousSpeed + (accel * currentTime.getTickUnit())
 
     if _speed > baseSpeed
       _speed = baseSpeed
     elsif _speed < 0
       distanceFromStart = @javaAgent.currentPlace.getAdvancingDistance()
-      linkID = getCurrentLinkId()
       wantedBackDist = _speed * currentTime.getTickUnit()
 
-      sameLane = @javaAgent.currentPlace.getLane()
       closest_agent_behind = nil
       min_dist_behind = Float::INFINITY
 
-      sameLane.each do |other_agent|
-        if other_agent.isGhost()
-          next unless other_agent.hasTag("crushed")
-        end
-        next if other_agent.getID() == agentID
+      @javaAgent.currentPlace.getLane().each do |other_agent|
+        next if other_agent.isGhost() && !other_agent.hasTag("crushed")
+        next if other_agent.getID().to_s == agentID
 
         other_pos = other_agent.currentPlace.getAdvancingDistance()
-        if other_pos < distanceFromStart
-          dist_behind = distanceFromStart - other_pos
-          if dist_behind < min_dist_behind
-            min_dist_behind = dist_behind
-            closest_agent_behind = other_agent
-          end
+        next unless other_pos < distanceFromStart
+
+        dist_behind = distanceFromStart - other_pos
+        if dist_behind < min_dist_behind
+          min_dist_behind = dist_behind
+          closest_agent_behind = other_agent
         end
       end
 
@@ -156,37 +152,35 @@ class Test < RubyAgentBase
       limit_from_agent = -Float::INFINITY
 
       if closest_agent_behind
-        gap = min_dist_behind - @physicalSpace
-        gap = 0.0 if gap < 0.0
-        limit_from_agent = -gap
+        limit_from_agent = -[min_dist_behind - @physicalSpace, 0.0].max
         availableBackDist = [availableBackDist, limit_from_agent].max
       end
 
       if wantedBackDist < availableBackDist
         _speed = availableBackDist / currentTime.getTickUnit()
-        
+
         if closest_agent_behind && availableBackDist == limit_from_agent
           PhysicsBlackboard.instance.register_push(
-            agentID, 
-            closest_agent_behind.getID(), 
-            accel, 
+            agentID,
+            closest_agent_behind.getID(),
+            accel,
             currentTime
           )
-           @last_blocked_by = closest_agent_behind.getID()
+          @last_blocked_by = closest_agent_behind.getID()
         end
       end
     end
 
     width = @javaAgent.currentPlace.getLaneWidth()
     indexInLane = @javaAgent.currentPlace.getIndexFromHeadingInLane(@javaAgent)
-    
+
     if indexInLane < width && @javaAgent.currentPlace.getHeadingNode().hasTag(getGoal())
       _speed = baseSpeed
     end
 
     return _speed
   end
-    
+
   def calcAccel(baseSpeed, previousSpeed, currentTime)
     _accel = @a0 * (baseSpeed - previousSpeed)
 
@@ -199,21 +193,19 @@ class Test < RubyAgentBase
 
     when /PlainModel/, /CrossingModel/
       lowerBound = -((baseSpeed / currentTime.getTickUnit()) + _accel)
-      physicalAgent, socialAgent,totalCrossingForce = search(currentTime)
+      physicalAgent, socialAgent, totalCrossingForce = search(currentTime)
 
-      physicalForce = calcPhysical(physicalAgent,currentTime)
+      physicalForce = calcPhysical(physicalAgent, currentTime)
 
-      socialForce = calcSocial(socialAgent,lowerBound,totalCrossingForce)
+      socialForce = calcSocial(socialAgent, lowerBound, totalCrossingForce)
       @last_social_force = socialForce
 
       _accel += (physicalForce + socialForce)
 
-      props = getSimulator().getProperties()
-      recovering_accel = props.getDouble("accelerationOfRecoveringHeadAgent", 0.0)
-      if recovering_accel > 0.0
-        if _accel <= 0 && previousSpeed <= 0 && @javaAgent.currentPlace.getIndexFromHeadingInLane(@javaAgent) == 0
-          _accel = recovering_accel
-        end
+      recovering_accel = getSimulator().getProperties().getDouble("accelerationOfRecoveringHeadAgent", 0.0)
+      if recovering_accel > 0.0 && _accel <= 0 && previousSpeed <= 0 &&
+         @javaAgent.currentPlace.getIndexFromHeadingInLane(@javaAgent) == 0
+        _accel = recovering_accel
       end
 
     else
@@ -226,21 +218,18 @@ class Test < RubyAgentBase
   #maybe should use a copy instead of the if-文
   #->using the copy and moving it causes added calculations to the sim. To reduce this only use it to move to the next link
   def search(currentTime)
-    if @javaAgent.isGhost()
-      return    [[], [], 0.0]
-    end
-    
+    return [[], [], 0.0] if @javaAgent.isGhost()
+
     #first instance
     physicalAgent = []
     socialAgent = []
     totalCrossingForce = 0.0
 
-    emptySpeed = getEmptySpeed()
     tickUnit = currentTime.getTickUnit()
 
-    maxSearch = (@personalSpace + emptySpeed) * (tickUnit + 1.0)
+    maxSearch = (@personalSpace + @desired_empty_speed) * (tickUnit + 1.0)
     remainingDist = maxSearch
-    
+
     virtualPlace = @javaAgent.currentPlace.duplicate()
     virtualRoute = @javaAgent.routePlan.duplicate()
 
@@ -250,7 +239,6 @@ class Test < RubyAgentBase
     countOther = 0
 
     while remainingDist > 0
-      currentLink = virtualPlace.getLink()
       linkLength = virtualPlace.getLinkLength()
 
       availableDistance = linkLength - startPos
@@ -263,95 +251,73 @@ class Test < RubyAgentBase
       laneWidthOther = virtualPlace.getOtherLaneWidth()
       insensitivePos = 0.0
 
-      (0...otherLane.size()).each do |i|
-        agent = otherLane.get(otherLane.size() - i - 1)
-        
+      (otherLane.size() - 1).downto(0) do |i|
+        agent = otherLane.get(i)
+
         # Counterflow agents are moving the opposite direction, so their coordinate is inverted
         agentPos = linkLength - agent.currentPlace.getAdvancingDistance()
 
-        if agentPos > searchDist
-          break # Past our search boundary
-        elsif agentPos <= startPos - @physicalSpace
-          next  # Behind our search start
-        elsif agentPos <= insensitivePos
-          next  # Too close in counterflow
-        else
-          countOther += 1
-          
-          # Exact distance from our actual agent to this target agent
-          dx = distanceSoFar + (agentPos - startPos)
-          dy = @widthUnit_OtherLane * (((laneWidthOther - (countOther % laneWidthOther)) % laneWidthOther) + 1)
+        break if agentPos > searchDist                    # Past our search boundary
+        next if agentPos <= startPos - @physicalSpace      # Behind our search start
+        next if agentPos <= insensitivePos                 # Too close in counterflow
 
-          agent_data = { agent: agent, dx: dx, dy: dy }
+        countOther += 1
 
-          if dx <= @physicalThreshold
-            physicalAgent << agent_data 
-          else
-            socialAgent << agent_data 
-          end
+        # Exact distance from our actual agent to this target agent
+        dx = distanceSoFar + (agentPos - startPos)
+        dy = @widthUnit_OtherLane * (((laneWidthOther - (countOther % laneWidthOther)) % laneWidthOther) + 1)
 
-          if countOther % laneWidthOther == 0
-            insensitivePos = agentPos + @insDist
-          end
-        end
+        bucket = (dx <= @physicalThreshold) ? physicalAgent : socialAgent
+        bucket << { agent: agent, dx: dx, dy: dy }
+
+        insensitivePos = agentPos + @insDist if countOther % laneWidthOther == 0
       end
 
       # --- FORWARD FLOW (Same Lane) ---
-      sameLane = virtualPlace.getLane()
       laneWidth = virtualPlace.getLaneWidth()
       myTurnIsOver = false
 
-      sameLane.each do |agent|
+      virtualPlace.getLane().each do |agent|
         agentPos = agent.currentPlace.getAdvancingDistance()
 
         if agent.getID() == getAgentId()
           myTurnIsOver = true
           next
-        elsif agentPos > searchDist
-          break # Past our search boundary
-        elsif agentPos < startPos
-          next  # Behind our search start
-        elsif agentPos == startPos && myTurnIsOver
-          next  
-        else
-          count += 1
-          
-          # Exact distance from our actual agent to this target agent
-          dx = distanceSoFar + (agentPos - startPos)
-          dy = (@widthUnit_SameLane * ((laneWidth - (count % laneWidth)) % laneWidth))
-
-          
-          agent_data = { agent: agent, dx: dx, dy: dy }
-
-          if dx <= @physicalThreshold
-            physicalAgent << agent_data 
-          else
-            socialAgent << agent_data 
-          end
         end
+
+        break if agentPos > searchDist                 # Past our search boundary
+        next if agentPos < startPos                    # Behind our search start
+        next if agentPos == startPos && myTurnIsOver
+
+        count += 1
+
+        # Exact distance from our actual agent to this target agent
+        dx = distanceSoFar + (agentPos - startPos)
+        dy = @widthUnit_SameLane * ((laneWidth - (count % laneWidth)) % laneWidth)
+
+        bucket = (dx <= @physicalThreshold) ? physicalAgent : socialAgent
+        bucket << { agent: agent, dx: dx, dy: dy }
       end
 
       remainingDist -= availableDistance
-      
       break if remainingDist <= 0
 
       nextLink = @javaAgent.send(:chooseNextLinkBody, currentTime, virtualPlace, virtualRoute, true)
       break if nextLink.nil?
 
-      speed_model = @javaAgent.getSpeedModel().to_s
-      if speed_model.include?("CrossingModel")
-        heading_node = virtualPlace.getHeadingNode()
+      if @javaAgent.getSpeedModel().to_s.include?("CrossingModel")
         distPastNode = -(distanceSoFar + availableDistance)
-        crossingForce = @javaAgent.send(:calcNodeCrossingForce, currentTime, virtualPlace.getLink(), nextLink, heading_node, distPastNode)
-        totalCrossingForce += crossingForce
+        totalCrossingForce += @javaAgent.send(:calcNodeCrossingForce, currentTime,
+                                              virtualPlace.getLink(), nextLink,
+                                              virtualPlace.getHeadingNode(), distPastNode)
       end
 
       virtualPlace.transitTo(nextLink)
-      
+
       startPos = 0.0
     end
 
-    return  physicalAgent,socialAgent,totalCrossingForce
+    return [physicalAgent, socialAgent, totalCrossingForce]
   end
 
   def calcPhysical(physicalAgent, currentTime)
@@ -359,53 +325,47 @@ class Test < RubyAgentBase
       @last_crush_pressure = 0.0
       return 0.0
     end
-    
+
     raw_net_force_x = 0.0
     raw_crush_pressure = 0.0
     total_body_drag = 0.0
-
-    physical_space_limit = @physicalSpace 
 
     physicalAgent.each do |data|
       other_agent = data[:agent]
       dx = data[:dx]
       dy = data[:dy]
-      
+
       # Euclidean distance
       distance = Math.sqrt(dx**2 + dy**2)
-      next if distance == 0.0 
+      next if distance == 0.0
 
       # ---------------------------------------------------------
       # 1. FRICTION FROM CRUSHED BODIES
       # ---------------------------------------------------------
       if other_agent.hasTag("crushed")
-        if distance <= physical_space_limit
-           total_body_drag += @body_drag_coefficient
-        end
-        next 
+        total_body_drag += @body_drag_coefficient if distance <= @physicalSpace
+        next
       end
 
       # ---------------------------------------------------------
       # 2. LIVING AGENTS (Reactive & Proactive Forces)
       # ---------------------------------------------------------
       other_mass = PhysicsBlackboard.instance.get_mass(other_agent.getID())
-      dir_x = -(dx / distance) 
+      dir_x = -(dx / distance)
       incoming_force_mag = 0.0
 
       # Blackboard Check: Reactive Force
       if has_blackboard_hit?(other_agent.getID(), @javaAgent.getID(), currentTime)
         incoming_accel = get_blackboard_hit_accel(other_agent.getID(), @javaAgent.getID(), currentTime)
-        
+
         # Math for if being pushed into
         incoming_force_mag = other_mass * incoming_accel.abs
       else
         other_accel = PhysicsBlackboard.instance.get_accel(other_agent.getID())
         if other_accel > 0 && dx < 0
           dot_product = other_accel * dir_x
-          if dot_product > 0
-            # Math for other times
-            incoming_force_mag = other_mass * dot_product
-          end
+          # Math for other times
+          incoming_force_mag = other_mass * dot_product if dot_product > 0
         end
       end
 
@@ -451,21 +411,21 @@ class Test < RubyAgentBase
     #check with the threshold to see if crushed
     @last_net_force = net_force_x
     if final_crush_pressure > @crush_threshold
-      self.crush_agent!
+      crush_agent!
       @last_net_force = 0.0
-      return 0.0 
-    else
-      #F = m*a => a = F/m
-      return net_force_x / @my_mass
+      return 0.0
     end
+
+    #F = m*a => a = F/m
+    return net_force_x / @my_mass
   end
 
-  def calcSocial(socialAgent,lowerBound,totalCrossingForce)
-    totalCrossingForce = totalCrossingForce || 0.0
+  def calcSocial(socialAgent, lowerBound, totalCrossingForce)
+    totalCrossingForce ||= 0.0
 
-    # Fetch agent-specific SFM parameters from the Java core
-    empty_speed = getEmptySpeed()
-    
+    # Individualized desired speed (getEmptySpeed() * this agent's speed_factor)
+    empty_speed = @desired_empty_speed
+
     socialAgent.each do |data|
       dx = data[:dx]
       dy = data[:dy]
@@ -473,22 +433,20 @@ class Test < RubyAgentBase
       # ---------------------------------------------------------
       # 1. DIRECTIONAL FILTERING
       # ---------------------------------------------------------
-      # In standard 1D/Lane routing, social psychological repulsion 
-      # only applies to agents in front of you. Agents behind you (dx < 0) 
+      # In standard 1D/Lane routing, social psychological repulsion
+      # only applies to agents in front of you. Agents behind you (dx < 0)
       # are responsible for avoiding you, so they don't apply a forward force.
-      next if dx <= 0.0 
+      next if dx <= 0.0
 
-      # Calculate true Euclidean distance 
+      # Calculate true Euclidean distance
       dist = Math.sqrt(dx**2 + dy**2)
 
       # ---------------------------------------------------------
       # 2. SFM REPULSION MATH
       # ---------------------------------------------------------
-      # This matches the Java core logic. It always yields a negative 
+      # This matches the Java core logic. It always yields a negative
       # value, pushing the agent's acceleration backwards (deceleration).
-      repulsion = -empty_speed * @a1 * Math.exp(@a2 * (@personalSpace - dist))
-      
-      totalCrossingForce += repulsion
+      totalCrossingForce += -empty_speed * @a1 * Math.exp(@a2 * (@personalSpace - dist))
 
       # ---------------------------------------------------------
       # 3. LOWER BOUND OPTIMIZATION (Early Exit)
@@ -528,25 +486,17 @@ class Test < RubyAgentBase
   def enable_ghost_mode
     return unless @javaAgent
 
-    if @javaAgent.respond_to?(:setGhost)
-      @javaAgent.setGhost(true)
-    end
-
-    if @javaAgent.respond_to?(:setSpeed)
-      @javaAgent.setSpeed(0.0)
-    end
-
-    #$stdout.puts "GHOST ENABLED id=#{@javaAgent.getID()}"
-    $stdout.flush
+    @javaAgent.setGhost(true) if @javaAgent.respond_to?(:setGhost)
+    @javaAgent.setSpeed(0.0) if @javaAgent.respond_to?(:setSpeed)
   end
 
   # --- Blackboard Integration ---
-  
-  def has_blackboard_hit?(aggressor_id, victim_id,currentTime)
-   PhysicsBlackboard.instance.has_hit?(aggressor_id, victim_id, currentTime)
+
+  def has_blackboard_hit?(aggressor_id, victim_id, currentTime)
+    PhysicsBlackboard.instance.has_hit?(aggressor_id, victim_id, currentTime)
   end
 
-  def get_blackboard_hit_accel(aggressor_id, victim_id,currentTime)
+  def get_blackboard_hit_accel(aggressor_id, victim_id, currentTime)
     PhysicsBlackboard.instance.get_hit_accel(aggressor_id, victim_id, currentTime)
   end
 

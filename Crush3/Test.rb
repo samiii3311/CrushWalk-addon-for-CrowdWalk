@@ -56,6 +56,9 @@ class Test < RubyAgentBase
     # off at (own push) / (1 - pressureTransfer), e.g. ~750 N at 0.9 -- too low to ever crush.
     # ponytail: uncited knob; calibrate against measured crowd forces if a source turns up.
     @pressure_transfer = props.getDouble("pressureTransfer", 1.0)
+    # SFM repulsion from people ahead also within contact range (see add_neighbor).
+    # false = old behaviour (no braking from contacts), for comparison runs.
+    @contact_braking = props.getBoolean("contactBraking", true)
     @last_raw_pressure = 0.0
     @push_resistance = props.getDouble("pushResistance", @my_mass * 9.8 * 0.05)
     @last_crush_pressure = 0.0
@@ -302,8 +305,7 @@ class Test < RubyAgentBase
         dx = distanceSoFar + (agentPos - startPos)
         dy = @widthUnit_OtherLane * (((laneWidthOther - (countOther % laneWidthOther)) % laneWidthOther) + 1)
 
-        bucket = (dx <= @physicalThreshold) ? physicalAgent : socialAgent
-        bucket << { agent: agent, dx: dx, dy: dy }
+        add_neighbor(physicalAgent, socialAgent, { agent: agent, dx: dx, dy: dy })
 
         insensitivePos = agentPos + @insDist if countOther % laneWidthOther == 0
       end
@@ -343,8 +345,7 @@ class Test < RubyAgentBase
         dx = distanceSoFar + (agentPos - startPos)
         dy = @widthUnit_SameLane * ((laneWidth - (count % laneWidth)) % laneWidth)
 
-        bucket = (dx <= @physicalThreshold) ? physicalAgent : socialAgent
-        bucket << { agent: agent, dx: dx, dy: dy }
+        add_neighbor(physicalAgent, socialAgent, { agent: agent, dx: dx, dy: dy })
       end
 
       # Only the nearest row behind (laneWidth closest agents) pushes on us directly; rows further
@@ -371,6 +372,19 @@ class Test < RubyAgentBase
     end
 
     return [physicalAgent, socialAgent, totalCrossingForce]
+  end
+
+  # Sorts a neighbour found by search(). Contacts (within physicalThreshold) go to calcPhysical
+  # (pushes -> pressure). With contactBraking they ALSO go to calcSocial, so the SFM repulsion
+  # brakes for the nearest people ahead too -- without it, the people right in front (who should
+  # slow you most) had no braking effect, and dense crowds walked at full speed.
+  def add_neighbor(physicalAgent, socialAgent, entry)
+    if entry[:dx] <= @physicalThreshold
+      physicalAgent << entry
+      socialAgent << entry if @contact_braking
+    else
+      socialAgent << entry
+    end
   end
 
   def calcPhysical(physicalAgent, currentTime)

@@ -4,28 +4,29 @@
     "scenario_file": "scenario.json",
    // "agent_appearance_file": "agent_appearance.json",
     //"crushed_agents_log_dir": "/mnt/ssd_2tb/log0507",
-    "dynamic_logging": {
-         "file": "/mnt/ssd_2tb/log-sep14/fieldsTest.csv",
-        "fields": [
-        "link_id",
-        "position",
-        "compression_pressure",
-        "raw_pressure",
-        "current_speed",
-        "empty_speed",
-        "push_force",
-        "social_force",
-        "blocked_by",
-        "agent_status"
-            // status: 0 = normal, 1 = crushed
-        ]
-    },
+    // "dynamic_logging": {
+    //      "file": "/mnt/ssd_2tb/log-sep14/fieldsTest.csv",
+    //     "fields": [
+    //     "link_id",
+    //     "position",
+    //     "compression_pressure",
+    //     "raw_pressure",
+    //     "current_speed",
+    //     "empty_speed",
+    //     "push_force",
+    //     "social_force",
+    //     "blocked_by",
+    //     "agent_status"
+    //         // status: 0 = normal, 1 = crushed
+    //     ]
+    // },
     "link_logging": {
     "file": "/mnt/ssd_2tb/log-sep14/linkMetrics.csv",
     "fields": ["push_force", "social_force", "compression_pressure", "raw_pressure", "link_direction", "speed_fwd", "speed_bwd"]
     },
     "crushThreshold":1112.0,  // N, Kroll et al. 2017
     "pressureTransfer":1.0,   // share of received pressure passed to the agent in front (1 = full, A->B->C)
+    "contactBraking":true,    // SFM repulsion also from people ahead within contact range (false = old behaviour)
     "crushMargin":50.0,      // N; once over crushThreshold, keeps counting down to crushThreshold - crushMargin
     "crushDuration":240.0,   // seconds above crushThreshold in a row before crush (Kroll et al. 2017: 4-6 min)
     "simulation_step_time": 1,

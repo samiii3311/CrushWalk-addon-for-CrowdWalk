@@ -18,7 +18,10 @@ CrowdWalk agents normally block each other on a lane. CrushWalk adds two boolean
 ```
 crowdwalk/
 ├── Crush2/              Intermediate Ruby agent prototype and scenarios
-├── Crush3/              Blackboard-architecture prototype and physics tests
+├── Crush3/              Blackboard-architecture prototype and physics tests,
+│                        plus the crush-prediction pipeline (make_maps.py,
+│                        run_batch.py, link_context.py, force_model.py;
+│                        guide in Crush3/README.md)
 ├── CrushTest/           Integration test setup and plotting utilities
 ├── CrushTesting/        Runnable benchmark scenarios: 8 map topologies
 │                        (1OneWay.xml … 8RandomMovement.xml, covering one-way
@@ -95,6 +98,10 @@ A GPX trace converted to model coordinates:
 ```
 python gpxToCsv.py input_track.gpx output_coordinates.csv
 ```
+
+## Crush-prediction pipeline
+
+`Crush3/` also contains tools that generate random scenarios, run them unattended, collect the results into a database, and train a model that predicts crush force. See [Crush3/README.md](Crush3/README.md) for a step-by-step guide.
 
 ## Output
 

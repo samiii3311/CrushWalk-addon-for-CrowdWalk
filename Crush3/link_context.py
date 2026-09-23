@@ -12,7 +12,10 @@ Java rebuild / re-patch is needed.
 
 Per-record run info:
   scenario_id        run id (--run-id, default <csv folder>/<csv name>); re-loading a run replaces it
-  map_file           map this run used (map_file in prop.json, or --map)
+  map_file           readable label of the map this run used: <folder>/<file>, e.g. corridor_003/Map.xml
+  map_id             hash of the map's contents: same map -> same id, even from different folders;
+                     different maps -> different ids, even if both are named Map.xml.
+                     force_model.py --holdout-map groups runs by this.
   length, width, area_m2, link_tags   this link's details from the map
   prev_width_ratio   widest upstream width / own width (>1 = narrowing into this link)
 
@@ -51,6 +54,7 @@ Usage (on the Linux machine):
 """
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -74,10 +78,13 @@ def parse_links(map_xml):
     return pd.DataFrame(rows)
 
 
-def read_json_c(path):
+def parse_json_c(text):
     """CrowdWalk JSON allows // comments; strip them (outside strings) before parsing."""
-    text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*', lambda m: m.group(1) or "", Path(path).read_text(encoding="utf-8"))
-    return json.loads(text)
+    return json.loads(re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*', lambda m: m.group(1) or "", text))
+
+
+def read_json_c(path):
+    return parse_json_c(Path(path).read_text(encoding="utf-8"))
 
 
 def build_run(df, map_xml, run_id):
@@ -85,8 +92,14 @@ def build_run(df, map_xml, run_id):
     Sim settings (prop.json) are deliberately NOT added: real-world data wouldn't have them."""
     out = add_context(df, parse_links(map_xml))
     out.insert(0, "scenario_id", run_id)
-    out.insert(1, "map_file", Path(map_xml).name)
+    map_xml = Path(map_xml).resolve()
+    out.insert(1, "map_file", f"{map_xml.parent.name}/{map_xml.name}")
+    out.insert(2, "map_id", map_id(map_xml))
     return out
+
+
+def map_id(map_xml):
+    return hashlib.sha1(Path(map_xml).read_bytes()).hexdigest()[:10]
 
 
 def quote_ident(name):
@@ -266,7 +279,12 @@ def selftest():
         con.close()
         assert n == 2 + 4
         assert not any(c.startswith("prop_") for c in build_run(df, tmp / "one.xml", "r"))
-        assert rows == [("run1", "one.xml", 2, None, "Tx"), ("run2", "two.xml", 4, 7.0, "Tx")], rows
+        label = tmp.name
+        assert rows == [("run1", f"{label}/one.xml", 2, None, "Tx"), ("run2", f"{label}/two.xml", 4, 7.0, "Tx")], rows
+        # map_id: same contents in another folder -> same id; different map -> different id
+        (tmp / "copy").mkdir()
+        (tmp / "copy" / "Map.xml").write_bytes((tmp / "one.xml").read_bytes())
+        assert map_id(tmp / "copy" / "Map.xml") == map_id(tmp / "one.xml") != map_id(tmp / "two.xml")
     print("selftest ok")
 
 

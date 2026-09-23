@@ -51,6 +51,12 @@ class Test < RubyAgentBase
     @physicalSpace = space_term ? space_term.getDouble() : props.getDouble("physicalSpace", 0.5)
 
     @my_resistance = @my_mass * 9.8 * 0.5
+    # Share of an agent's received pressure it passes on to the agent in front (A -> B -> C).
+    # 1.0 = full: the front of a queue feels everyone behind it. Below 1 the build-up levels
+    # off at (own push) / (1 - pressureTransfer), e.g. ~750 N at 0.9 -- too low to ever crush.
+    # ponytail: uncited knob; calibrate against measured crowd forces if a source turns up.
+    @pressure_transfer = props.getDouble("pressureTransfer", 1.0)
+    @last_raw_pressure = 0.0
     @push_resistance = props.getDouble("pushResistance", @my_mass * 9.8 * 0.05)
     @last_crush_pressure = 0.0
     @last_net_force = 0.0
@@ -122,6 +128,7 @@ class Test < RubyAgentBase
 
     telemetry_data = {
       pressure: @last_crush_pressure,
+      raw_pressure: @last_raw_pressure,
       speed: _speed,
       empty_speed: @desired_empty_speed,
       net_force: @last_net_force,
@@ -208,6 +215,9 @@ class Test < RubyAgentBase
 
   def calcAccel(baseSpeed, previousSpeed, currentTime)
     _accel = @a0 * (baseSpeed - previousSpeed)
+    # Drive = how hard this agent pushes forward (wants to walk faster than it can). Its net
+    # accel is usually negative in a jam (the agent ahead brakes it), so that can't be the push.
+    PhysicsBlackboard.instance.log_drive(getAgentId(), @my_mass * [_accel, 0.0].max)
 
     speed_model = @javaAgent.getSpeedModel().to_s
 
@@ -311,7 +321,15 @@ class Test < RubyAgentBase
         end
 
         break if agentPos > searchDist                 # Past our search boundary
-        next if agentPos < startPos                    # Behind our search start
+        if agentPos < startPos                         # Behind us
+          # People directly behind push us forward: keep them as physical contacts (dx < 0,
+          # directly behind -> dy = 0). Current link only; crushed bodies behind don't push.
+          # ponytail: agents behind on the previous link are not seen; add if merges need it.
+          if distanceSoFar == 0.0 && startPos - agentPos <= @physicalThreshold && !agent.isGhost()
+            physicalAgent << { agent: agent, dx: agentPos - startPos, dy: 0.0, behind: true }
+          end
+          next
+        end
         next if agentPos == startPos && myTurnIsOver
 
         count += 1
@@ -349,6 +367,8 @@ class Test < RubyAgentBase
     if physicalAgent.empty?
       @@dbg_physical_empty += 1
       @last_crush_pressure = 0.0
+      @last_raw_pressure = 0.0
+      PhysicsBlackboard.instance.log_pressure(getAgentId(), 0.0)
       @time_over_threshold = 0.0  # no contact -> pressure released
       return 0.0
     end
@@ -388,13 +408,15 @@ class Test < RubyAgentBase
 
         # Math for if being pushed into
         incoming_force_mag = other_mass * incoming_accel.abs
-      else
-        other_accel = PhysicsBlackboard.instance.get_accel(other_agent.getID())
-        if other_accel > 0 && dx < 0
-          dot_product = other_accel * dir_x
-          # Math for other times
-          incoming_force_mag = other_mass * dot_product if dot_product > 0
-        end
+      elsif data[:behind]
+        # Same-lane agent behind pushing us forward (not counterflow, which walks the other way): its own drive plus the pressure it receives from
+        # the agents behind it, passed on (A -> B -> C). Uses the value the agent behind
+        # logged last (this tick if it already updated, else last tick).
+        # ponytail: one-tick lag per person when the update order is back-to-front; fine at
+        # 1 s ticks, revisit if tick length changes.
+        push = PhysicsBlackboard.instance.get_drive(other_agent.getID()) +
+               @pressure_transfer * PhysicsBlackboard.instance.get_pressure(other_agent.getID())
+        incoming_force_mag = push * dir_x if dir_x > 0
       end
 
       # Accumulate RAW Vectors and Scalars
@@ -405,6 +427,8 @@ class Test < RubyAgentBase
     end
 
     @@dbg_max_raw_pressure = raw_crush_pressure if raw_crush_pressure > @@dbg_max_raw_pressure
+    @last_raw_pressure = raw_crush_pressure
+    PhysicsBlackboard.instance.log_pressure(getAgentId(), raw_crush_pressure)  # passed on to the agent in front
 
     # ---------------------------------------------------------
     # 3. CRUSH PRESSURE — uses the HIGH threshold (injury-relevant)

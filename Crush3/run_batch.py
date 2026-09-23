@@ -35,6 +35,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -66,6 +67,32 @@ def simulate(cmd, prop, cwd, timeout):
             p.wait()
             return False, f"timeout after {timeout}s"
     return code == 0, f"exit code {code}"
+
+
+def last_tick(link_csv):
+    """Simulated second the run has reached = first column of the last complete line of its
+    linkMetrics.csv (only the file's tail is read, so this is cheap even for big files)."""
+    try:
+        with open(link_csv, "rb") as f:
+            f.seek(0, 2)
+            start = max(0, f.tell() - 4096)
+            f.seek(start)
+            data = f.read().decode("utf-8", "ignore")
+    except OSError:
+        return None
+    lines = data.split("\n")
+    lines = lines[1 if start else 0:-1]  # drop the line cut by the seek, and the one still being written
+    for line in reversed(lines):
+        try:
+            return int(float(line.split(",")[0]))
+        except ValueError:  # header
+            continue
+    return None
+
+
+def fmt_secs(secs):
+    m, s = divmod(int(secs), 60)
+    return f"{m // 60}h{m % 60:02d}m" if m >= 60 else f"{m}m{s:02d}s"
 
 
 def done_runs(db):
@@ -106,10 +133,33 @@ def run_batches(args, sim_cmd):
     done = done_runs(args.db)
     seed, batch, loaded, fail_streak = args.start_seed, 0, 0, 0
 
-    def timed_sim(prop):
+    running, lock, stop = {}, threading.Lock(), threading.Event()
+    sim_secs = args.sim_minutes * 60
+
+    def timed_sim(prop, run_id):
         t0 = time.time()
-        ok, msg = simulate(sim_cmd(prop), prop, args.crowdwalk, args.timeout)
+        with lock:
+            running[run_id] = (t0, Path(read_json_c(prop)["link_logging"]["file"]))
+        print(f"  started {run_id}", flush=True)
+        try:
+            ok, msg = simulate(sim_cmd(prop), prop, args.crowdwalk, args.timeout)
+        finally:
+            with lock:
+                running.pop(run_id, None)
         return ok, msg, time.time() - t0
+
+    def heartbeat():  # every --progress-every seconds: one line per run in progress
+        while not stop.wait(args.progress_every):
+            with lock:
+                items = list(running.items())
+            for run_id, (t0, link_csv) in items:
+                tick = last_tick(link_csv)
+                where = f"simulated {tick}/{sim_secs} s ({100 * tick / sim_secs:.0f}%)" if tick is not None \
+                    else "starting up (no link log yet)"
+                print(f"    ... {run_id}: running {fmt_secs(time.time() - t0)}, {where}", flush=True)
+
+    if args.progress_every:
+        threading.Thread(target=heartbeat, daemon=True).start()
 
     try:
         while (loaded < args.runs) if args.runs else (args.batches == 0 or batch < args.batches):
@@ -122,9 +172,9 @@ def run_batches(args, sim_cmd):
             print(f"[{tag}] {len(rows)} runs generated, {len(rows) - len(todo)} already in DB or not needed, "
                   f"{len(todo)} to simulate", flush=True)
             with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-                futures = {pool.submit(timed_sim, out / tag / r["run"] / "prop.json"):
+                futures = {pool.submit(timed_sim, out / tag / r["run"] / "prop.json", f"{tag}/{r['run']}"):
                            (f"{tag}/{r['run']}", out / tag / r["run"] / "prop.json") for r in todo}
-                for fut in as_completed(futures):  # DB writes stay in this one thread (DuckDB = single writer)
+                for i, fut in enumerate(as_completed(futures), 1):  # DB writes stay in this thread (single writer)
                     run_id, prop = futures[fut]
                     ok, msg, secs = fut.result()
                     n_rows = 0
@@ -138,7 +188,8 @@ def run_batches(args, sim_cmd):
                         fail_streak += 1
                     log.writerow([run_id, status, round(secs, 1), n_rows, msg])
                     log_f.flush()
-                    print(f"  {run_id}: {status} ({secs:.0f}s{', ' + msg if msg else ''})", flush=True)
+                    print(f"  [{i}/{len(todo)}] {run_id}: {status} ({fmt_secs(secs)}{', ' + msg if msg else ''})",
+                          flush=True)
             if fail_streak >= args.max_fail_streak:  # broken setup, not one bad map -> don't loop forever
                 print(f"{fail_streak} runs failed in a row -- stopping; check {out}/runner_log.csv and a sim.log")
                 break
@@ -146,6 +197,7 @@ def run_batches(args, sim_cmd):
     except KeyboardInterrupt:
         print("\nstopped -- finished runs are kept in the DB; rerunning skips them")
     finally:
+        stop.set()
         log_f.close()
         print(f"loaded {loaded} new run(s) into {args.db}" + (f" (target {args.runs})" if args.runs else ""))
     return loaded
@@ -172,7 +224,7 @@ def selftest():
     args = argparse.Namespace(out=str(tmp / "maps"), log_root=str(tmp / "logs"), db=str(tmp / "t.duckdb"),
                               start_seed=5, batches=2, runs=None, n=1, runs_per_map=2, sim_minutes=60, families=FAMILIES, jobs=2,
                               timeout=60, crowdwalk=tmp, drop_agent_log=False,
-                              max_fail_streak=10)
+                              max_fail_streak=10, progress_every=1)
     run_batches(args, sim)
     import duckdb
     with duckdb.connect(args.db, read_only=True) as con:
@@ -209,6 +261,15 @@ def selftest():
                                   encoding="utf-8")
     (lo / "Map.xml").write_text((HERE / "Map.xml").read_text(encoding="utf-8"), encoding="utf-8")
     assert load_run(lo / "prop.json", "linkonly", str(tmp / "lo.duckdb"), drop_agent_log=True) == (1, "")
+    # progress: last_tick reads the last complete line, skipping a half-written one
+    pt = tmp / "progress.csv"
+    pt.write_text("current_traveling_period,link_id\n" + "".join(f"{t},_p1\n" for t in range(2000)) + "20", encoding="utf-8")
+    assert last_tick(pt) == 1999 and last_tick(tmp / "missing.csv") is None  # not the half-written "20"
+    pt.write_text("current_traveling_period,link_id\n" + "".join(f"{t},_p1\n" for t in range(5)), encoding="utf-8")
+    assert last_tick(pt) == 4  # small file: read from the start, header skipped
+    pt.write_text("current_traveling_period,link_id\n", encoding="utf-8")
+    assert last_tick(pt) is None
+    assert fmt_secs(65) == "1m05s" and fmt_secs(3725) == "1h02m"
     # a run over --timeout is killed and reported, not waited on
     slow = [sys.executable, "-c", "import time; time.sleep(30)"]
     t0 = time.time()
@@ -237,6 +298,8 @@ def main():
     p.add_argument("--timeout", type=int, default=3600, help="seconds before a run is killed (default 3600)")
     p.add_argument("--crowdwalk", type=Path, default=HERE.parent, help="folder with quickstart.sh (default: crowdwalk/)")
     p.add_argument("--drop-agent-log", action="store_true", help="also delete agents.csv after loading")
+    p.add_argument("--progress-every", type=int, default=30,
+                   help="seconds between progress lines for running simulations (default 30, 0 = off)")
     p.add_argument("--max-fail-streak", type=int, default=10,
                    help="stop after this many failed runs in a row (default 10) -- a broken setup, not a bad map")
     args = p.parse_args()

@@ -9,6 +9,10 @@ class PhysicsBlackboard
     # Intent memory: { agent_id => accel }
     @intent = {} 
     @masses = {}
+    # Forward push per agent (mass * desired accel, >= 0) and raw pressure it receives, so the
+    # agent in front can feel both: pressure passes down a queue (A -> B -> C).
+    @drive = {}
+    @pressure = {}
     # Speed factor memory: { agent_id => speed_factor }
     @@speed_factors = {}
     @@agent_hashes = {}
@@ -39,6 +43,22 @@ class PhysicsBlackboard
 
   def get_accel(agent_id)
     return @intent[agent_id] || 0.0
+  end
+
+  def log_drive(agent_id, force)
+    @drive[agent_id] = force
+  end
+
+  def get_drive(agent_id)
+    @drive[agent_id] || 0.0
+  end
+
+  def log_pressure(agent_id, force)
+    @pressure[agent_id] = force
+  end
+
+  def get_pressure(agent_id)
+    @pressure[agent_id] || 0.0
   end
 
   def log_mass(agent_id, mass)

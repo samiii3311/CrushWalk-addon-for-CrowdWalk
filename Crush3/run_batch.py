@@ -29,6 +29,7 @@ Usage (on the Linux machine, from crowdwalk/):
 
 import argparse
 import csv
+import json
 import os
 import signal
 import subprocess
@@ -88,9 +89,9 @@ def load_run(prop, run_id, db, drop_agent_log):
         return 0, "linkMetrics.csv has no rows"
     write_db(build_run(df, prop.parent / pj["map_file"], run_id), db, run_id)
     link_csv.unlink()
-    agent_csv = Path(pj["dynamic_logging"]["file"])
-    if drop_agent_log and agent_csv.exists():
-        agent_csv.unlink()
+    agent_file = pj.get("dynamic_logging", {}).get("file")  # per-agent logger is optional
+    if drop_agent_log and agent_file and Path(agent_file).exists():
+        Path(agent_file).unlink()
     return len(df), ""
 
 
@@ -166,7 +167,7 @@ def selftest():
         "rows = ['current_traveling_period,link_id,agent_count,mean_speed,max_compression_pressure']\n"
         "rows += [f'{t},{l},{random.randint(1,20)},0.8,{random.uniform(0,1500):.1f}' for t in range(20) for l in ids]\n"
         "out.write_text('\\n'.join(rows) + '\\n')\n"
-        "Path(pj['dynamic_logging']['file']).write_text('x\\n')\n", encoding="utf-8")
+        "if 'dynamic_logging' in pj: Path(pj['dynamic_logging']['file']).write_text('x\\n')\n", encoding="utf-8")
     sim = lambda prop: [sys.executable, str(fake), str(prop)]
     args = argparse.Namespace(out=str(tmp / "maps"), log_root=str(tmp / "logs"), db=str(tmp / "t.duckdb"),
                               start_seed=5, batches=2, runs=None, n=1, runs_per_map=2, sim_minutes=60, families=FAMILIES, jobs=2,
@@ -199,6 +200,15 @@ def selftest():
     args3 = argparse.Namespace(**{**vars(args2), "db": str(tmp / "f.duckdb"), "out": str(tmp / "maps_f"), "runs": 5})
     assert run_batches(args3, lambda prop: [sys.executable, "-c", "raise SystemExit(1)"]) == 0
     assert len(pd.read_csv(tmp / "maps_f" / "runner_log.csv")) == 10
+    # link logger only (no dynamic_logging in prop.json): loading still works, even with --drop-agent-log
+    lo = tmp / "linkonly"
+    lo.mkdir()
+    (lo / "linkMetrics.csv").write_text("current_traveling_period,link_id,agent_count,mean_speed,max_compression_pressure\n"
+                                        "0,_p00010,5,0.8,100.0\n", encoding="utf-8")
+    (lo / "prop.json").write_text(json.dumps({"map_file": "Map.xml", "link_logging": {"file": str(lo / "linkMetrics.csv")}}),
+                                  encoding="utf-8")
+    (lo / "Map.xml").write_text((HERE / "Map.xml").read_text(encoding="utf-8"), encoding="utf-8")
+    assert load_run(lo / "prop.json", "linkonly", str(tmp / "lo.duckdb"), drop_agent_log=True) == (1, "")
     # a run over --timeout is killed and reported, not waited on
     slow = [sys.executable, "-c", "import time; time.sleep(30)"]
     t0 = time.time()

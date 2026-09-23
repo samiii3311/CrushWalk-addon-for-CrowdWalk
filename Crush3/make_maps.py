@@ -222,6 +222,8 @@ def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1
     gen_entry = read_gen(template / "gen.json")[0]
     agent_template = {k: v for k, v in gen_entry.items() if k not in ("total", "startPlace", "goal", "startTime", "duration")}
     base_prop = read_json_c(template / "prop.json")
+    if "link_logging" not in base_prop:
+        sys.exit(f"{template / 'prop.json'} has no link_logging block -- the pipeline needs the link logger")
     rows = []
     for fam in families:
         for i in range(n):
@@ -245,7 +247,8 @@ def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1
                             ruby_load_path=str(template),
                             randseed=random.Random(f"{seed}-{run}-crowdwalk").randrange(1, 2**31))
                 prop.pop("agent_appearance_file", None)
-                prop["dynamic_logging"]["file"] = str(logs / "agents.csv")
+                if "dynamic_logging" in prop:  # per-agent logger is optional
+                    prop["dynamic_logging"]["file"] = str(logs / "agents.csv")
                 prop["link_logging"]["file"] = str(logs / "linkMetrics.csv")
                 (d / "prop.json").write_text(json.dumps(prop, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
                 rows.append({"run": run, "map": name, "family": fam, "links": len(m.links), **mparams, **gparams,
@@ -329,6 +332,13 @@ def selftest():
     assert all(row[k] + row[k.replace("start_skew_s", "duration_s")] + 60 < 3600
                for row in rows for k in row if k.endswith("start_skew_s"))
     assert generate(Path(tempfile.mkdtemp()), 3, 7, HERE, None, runs_per_map=2)[4] == rows[4]  # same seed -> same
+    # link logger only: a template prop.json without dynamic_logging still generates
+    tpl = Path(tempfile.mkdtemp())
+    (tpl / "gen.json").write_text((HERE / "gen.json").read_text(encoding="utf-8"), encoding="utf-8")
+    (tpl / "prop.json").write_text(json.dumps({k: v for k, v in read_json_c(HERE / "prop.json").items()
+                                               if k != "dynamic_logging"}), encoding="utf-8")
+    rows2 = generate(Path(tempfile.mkdtemp()) / "o", 1, 7, tpl, None, runs_per_map=1)
+    assert len(rows2) == 5
     print(f"selftest ok: {len(rows)} scenarios in {out}")
 
 

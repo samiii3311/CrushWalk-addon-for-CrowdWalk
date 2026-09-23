@@ -326,7 +326,11 @@ class Test < RubyAgentBase
           # directly behind -> dy = 0). Current link only; crushed bodies behind don't push.
           # ponytail: agents behind on the previous link are not seen; add if merges need it.
           if distanceSoFar == 0.0 && startPos - agentPos <= @physicalThreshold && !agent.isGhost()
-            physicalAgent << { agent: agent, dx: agentPos - startPos, dy: 0.0, behind: true }
+            # share: a lane holds a whole row of people side by side (laneWidth of them), and one
+            # agent's push is spread over the row it pushes on -- counting it in full for each
+            # agent in front would multiply pressure by laneWidth every row (-> infinity).
+            physicalAgent << { agent: agent, dx: agentPos - startPos, dy: 0.0, behind: true,
+                               share: 1.0 / [laneWidth, 1].max }
           end
           next
         end
@@ -416,7 +420,7 @@ class Test < RubyAgentBase
         # 1 s ticks, revisit if tick length changes.
         push = PhysicsBlackboard.instance.get_drive(other_agent.getID()) +
                @pressure_transfer * PhysicsBlackboard.instance.get_pressure(other_agent.getID())
-        incoming_force_mag = push * dir_x if dir_x > 0
+        incoming_force_mag = push * data[:share] * dir_x if dir_x > 0
       end
 
       # Accumulate RAW Vectors and Scalars

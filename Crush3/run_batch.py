@@ -20,6 +20,7 @@ Run ids in the DB are seed_<s>/<map>/run_<j>, e.g. seed_3/funnel_002/run_1.
 The per-agent log (agents.csv) is not in the DB; it is kept unless --drop-agent-log.
 
 Usage (on the Linux machine, from crowdwalk/):
+    python3 Crush3/run_batch.py                      # uses the SETTINGS block below
     python3 Crush3/run_batch.py --batches 5 --n 4 --runs-per-map 3 \\
         --out /mnt/ssd_2tb/gen_maps --log-root /mnt/ssd_2tb/gen_logs --db /mnt/ssd_2tb/crush.duckdb
     python3 Crush3/run_batch.py --runs 200 ...       # stop once 200 runs are in the DB (new seeds as needed)
@@ -45,7 +46,37 @@ import pandas as pd
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from link_context import TABLE, build_run, read_json_c, write_db  # noqa: E402
-from make_maps import FAMILIES, generate  # noqa: E402
+from make_maps import FAMILIES as ALL_FAMILIES, generate  # noqa: E402
+
+# =============================================================================
+# SETTINGS -- edit these, then just run:  python3 Crush3/run_batch.py
+# Any command-line option (e.g. --runs 20) overrides the value here for that run.
+# =============================================================================
+
+# How much to run
+RUNS = None               # stop after this many runs are loaded into the DB (None = use BATCHES)
+BATCHES = 1               # number of seeds to run when RUNS is None (0 = until Ctrl-C)
+N_MAPS_PER_FAMILY = 4     # maps per family, per seed
+RUNS_PER_MAP = 3          # different crowds (gen.json) per map
+FAMILIES = ["corridor", "funnel", "tjunction", "crossroads", "tree"]
+START_SEED = 0            # same seed -> same maps and crowds
+
+# Where things go ("~" = your home folder)
+OUT_DIR = "~/crush_test/maps"              # scenario folders, sim.log files, runner_log.csv
+LOG_ROOT = None                            # simulator CSVs (None = inside each run folder under OUT_DIR)
+DB_PATH = "/mnt/ssd_1tb/crush/crush.duckdb"  # the database (its folder must exist)
+
+# Simulation
+SIM_MINUTES = 60          # simulated minutes per run (scenario Finish event)
+TIMEOUT = 3600            # real seconds before a stuck run is killed
+JOBS = 1                  # simulations at the same time
+
+# Output / housekeeping
+PROGRESS_EVERY = 30       # seconds between progress lines (0 = off)
+DROP_AGENT_LOG = False    # also delete agents.csv after loading
+MAX_FAIL_STREAK = 10      # stop after this many failures in a row
+
+# =============================================================================
 
 
 def quickstart_cmd(crowdwalk_dir):
@@ -222,7 +253,7 @@ def selftest():
         "if 'dynamic_logging' in pj: Path(pj['dynamic_logging']['file']).write_text('x\\n')\n", encoding="utf-8")
     sim = lambda prop: [sys.executable, str(fake), str(prop)]
     args = argparse.Namespace(out=str(tmp / "maps"), log_root=str(tmp / "logs"), db=str(tmp / "t.duckdb"),
-                              start_seed=5, batches=2, runs=None, n=1, runs_per_map=2, sim_minutes=60, families=FAMILIES, jobs=2,
+                              start_seed=5, batches=2, runs=None, n=1, runs_per_map=2, sim_minutes=60, families=ALL_FAMILIES, jobs=2,
                               timeout=60, crowdwalk=tmp, drop_agent_log=False,
                               max_fail_streak=10, progress_every=1)
     run_batches(args, sim)
@@ -282,28 +313,41 @@ def main():
     if sys.argv[1:] == ["--selftest"]:
         return selftest()
     p = argparse.ArgumentParser(description="Generate -> simulate -> load into DuckDB, seed after seed.")
-    p.add_argument("--runs", type=int, default=None,
+    # defaults come from the SETTINGS block at the top of this file
+    p = argparse.ArgumentParser(description="Generate -> simulate -> load into DuckDB, seed after seed. "
+                                            "Defaults come from the SETTINGS block at the top of this file.")
+    p.add_argument("--runs", type=int, default=RUNS,
                    help="stop after this many runs are loaded into the DB (failed runs don't count); "
                         "moves on to new seeds as needed and overrides --batches")
-    p.add_argument("--batches", type=int, default=1, help="number of seeds to run (0 = until Ctrl-C)")
-    p.add_argument("--start-seed", type=int, default=0)
-    p.add_argument("--n", type=int, default=4, help="maps per family per seed (default 4)")
-    p.add_argument("--runs-per-map", type=int, default=3)
-    p.add_argument("--sim-minutes", type=int, default=60, help="simulated minutes before Finish (default 60)")
-    p.add_argument("--families", nargs="+", choices=FAMILIES, default=FAMILIES)
-    p.add_argument("--out", default="generated_maps", help="where scenario folders + runner_log.csv go")
-    p.add_argument("--log-root", default=None, help="where the simulator writes CSVs (default: each run folder)")
-    p.add_argument("--db", default="crush.duckdb")
-    p.add_argument("--jobs", type=int, default=1, help="simulations in parallel (default 1)")
-    p.add_argument("--timeout", type=int, default=3600, help="seconds before a run is killed (default 3600)")
+    p.add_argument("--batches", type=int, default=BATCHES, help="number of seeds to run (0 = until Ctrl-C)")
+    p.add_argument("--start-seed", type=int, default=START_SEED)
+    p.add_argument("--n", type=int, default=N_MAPS_PER_FAMILY, help="maps per family per seed")
+    p.add_argument("--runs-per-map", type=int, default=RUNS_PER_MAP)
+    p.add_argument("--sim-minutes", type=int, default=SIM_MINUTES, help="simulated minutes before Finish")
+    p.add_argument("--families", nargs="+", choices=ALL_FAMILIES, default=FAMILIES)
+    p.add_argument("--out", default=OUT_DIR, help="where scenario folders + runner_log.csv go")
+    p.add_argument("--log-root", default=LOG_ROOT, help="where the simulator writes CSVs (default: each run folder)")
+    p.add_argument("--db", default=DB_PATH)
+    p.add_argument("--jobs", type=int, default=JOBS, help="simulations in parallel")
+    p.add_argument("--timeout", type=int, default=TIMEOUT, help="seconds before a run is killed")
     p.add_argument("--crowdwalk", type=Path, default=HERE.parent, help="folder with quickstart.sh (default: crowdwalk/)")
-    p.add_argument("--drop-agent-log", action="store_true", help="also delete agents.csv after loading")
-    p.add_argument("--progress-every", type=int, default=30,
-                   help="seconds between progress lines for running simulations (default 30, 0 = off)")
-    p.add_argument("--max-fail-streak", type=int, default=10,
-                   help="stop after this many failed runs in a row (default 10) -- a broken setup, not a bad map")
+    p.add_argument("--drop-agent-log", action=argparse.BooleanOptionalAction, default=DROP_AGENT_LOG,
+                   help="also delete agents.csv after loading")
+    p.add_argument("--progress-every", type=int, default=PROGRESS_EVERY,
+                   help="seconds between progress lines for running simulations (0 = off)")
+    p.add_argument("--max-fail-streak", type=int, default=MAX_FAIL_STREAK,
+                   help="stop after this many failed runs in a row -- a broken setup, not a bad map")
     args = p.parse_args()
     args.crowdwalk = args.crowdwalk.resolve()
+    # "~" -> home folder, so the SETTINGS paths can use it
+    args.out = str(Path(args.out).expanduser())
+    args.db = str(Path(args.db).expanduser())
+    args.log_root = str(Path(args.log_root).expanduser()) if args.log_root else None
+    if not Path(args.db).parent.exists():
+        sys.exit(f"database folder {Path(args.db).parent} does not exist -- create it or change DB_PATH")
+    print(f"runs: {args.runs if args.runs else f'{args.batches} seed(s)'}, {args.n} map(s) x "
+          f"{len(args.families)} famil{'y' if len(args.families) == 1 else 'ies'} x {args.runs_per_map} run(s) per seed\n"
+          f"out: {args.out}\nlogs: {args.log_root or '(inside each run folder)'}\ndb: {args.db}", flush=True)
     run_batches(args, quickstart_cmd(args.crowdwalk))
 
 

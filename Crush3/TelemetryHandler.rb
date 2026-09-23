@@ -22,6 +22,12 @@ end
 
     config.setArg("link_id", link_id)
     config.setArg("position", position)
+    direction = physics_data[:link_direction] || 1
+    config.setArg("link_direction", direction.to_s)
+    # Speed split by walking direction (0 in the other one), so the link logger's
+    # mean_speed_fwd / mean_speed_bwd give per-direction speeds on one link row.
+    config.setArg("speed_fwd", (direction > 0 ? speed : 0.0).round(3).to_s)
+    config.setArg("speed_bwd", (direction < 0 ? speed : 0.0).round(3).to_s)
     config.setArg("compression_pressure", pressure.round(2).to_s)
     config.setArg("current_speed", speed.round(3).to_s)
     config.setArg("empty_speed", empty_speed.round(3).to_s)

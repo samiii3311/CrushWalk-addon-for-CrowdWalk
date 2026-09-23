@@ -11,6 +11,14 @@ class Test < RubyAgentBase
     "calcSpeed"
   ]
 
+  # ponytail: temporary diagnostic counters for the all-zero compression_pressure/
+  # crush_now/queue_count issue. Remove once the chokepoint is identified.
+  @@dbg_physical_nonempty = 0
+  @@dbg_physical_empty = 0
+  @@dbg_register_push = 0
+  @@dbg_max_raw_pressure = 0.0
+  @@dbg_last_tick = -1
+
   def initialize(agent, config, fallback)
     super(agent, config, fallback)
 
@@ -30,8 +38,14 @@ class Test < RubyAgentBase
 
     @body_drag_coefficient = props.getDouble("bodyDrag", 0.5 * @my_mass * 9.8)
 
-    # ponytail: need to add a new method to track sustained compression over 4~6 min (Kroll et al. 2017), not just an instant per-tick check
     @crush_threshold = props.getDouble("crushThreshold", 1112.0)
+    # Crushed only after the pressure stays above crushThreshold for crushDuration
+    # seconds in a row. Kroll et al. 2017: 1112 N can be fatal when held 4-6 min.
+    @crush_duration = props.getDouble("crushDuration", 240.0)
+    # Hysteresis: once the timer has started, dips down to crushThreshold - crushMargin
+    # still count as sustained, so small force jitter doesn't reset it.
+    @crush_margin = props.getDouble("crushMargin", 50.0)
+    @time_over_threshold = 0.0
 
     space_term = ItkTerm.getArg(@fallback, "physicalSpace")
     @physicalSpace = space_term ? space_term.getDouble() : props.getDouble("physicalSpace", 0.5)
@@ -86,6 +100,15 @@ class Test < RubyAgentBase
     ensure_fresh_config(agent_id)
     speed_factor = init_speed_factor()
 
+    dbg_tick = currentTime.getRelativeTime().to_i
+    if dbg_tick != @@dbg_last_tick && dbg_tick % 30 == 0
+      @@dbg_last_tick = dbg_tick
+      $stdout.puts "DEBUG t=#{dbg_tick} physicalNonEmpty=#{@@dbg_physical_nonempty} " \
+        "physicalEmpty=#{@@dbg_physical_empty} registerPush=#{@@dbg_register_push} " \
+        "maxRawPressure=#{@@dbg_max_raw_pressure.round(2)} myResistance=#{@my_resistance.round(2)}"
+      $stdout.flush
+    end
+
     _speed = calcSpeedBody(previousSpeed, currentTime, speed_factor)
     _speed = @javaAgent.currentPlace.getLink().calcRestrictedSpeed(_speed, @javaAgent, currentTime)
 
@@ -105,6 +128,7 @@ class Test < RubyAgentBase
       social_force: @last_social_force,
       link_id: getCurrentLinkId(),
       position: @javaAgent.getPositionOnLink(),
+      link_direction: @javaAgent.isForwardDirection() ? 1 : -1,  # 1 = from->to, -1 = to->from
       blocked_by: @last_blocked_by
     }
     TelemetryHandler.update_telemetry(@javaAgent, telemetry_data, currentTime)
@@ -160,6 +184,7 @@ class Test < RubyAgentBase
         _speed = availableBackDist / currentTime.getTickUnit()
 
         if closest_agent_behind && availableBackDist == limit_from_agent
+          @@dbg_register_push += 1
           PhysicsBlackboard.instance.register_push(
             agentID,
             closest_agent_behind.getID(),
@@ -322,9 +347,12 @@ class Test < RubyAgentBase
 
   def calcPhysical(physicalAgent, currentTime)
     if physicalAgent.empty?
+      @@dbg_physical_empty += 1
       @last_crush_pressure = 0.0
+      @time_over_threshold = 0.0  # no contact -> pressure released
       return 0.0
     end
+    @@dbg_physical_nonempty += 1
 
     raw_net_force_x = 0.0
     raw_crush_pressure = 0.0
@@ -376,6 +404,8 @@ class Test < RubyAgentBase
       end
     end
 
+    @@dbg_max_raw_pressure = raw_crush_pressure if raw_crush_pressure > @@dbg_max_raw_pressure
+
     # ---------------------------------------------------------
     # 3. CRUSH PRESSURE — uses the HIGH threshold (injury-relevant)
     # ---------------------------------------------------------
@@ -408,9 +438,15 @@ class Test < RubyAgentBase
     # ---------------------------------------------------------
     # 5. RESOLVE STATE
     # ---------------------------------------------------------
-    #check with the threshold to see if crushed
+    #check with the threshold to see if crushed -- must be sustained, resets when pressure drops
     @last_net_force = net_force_x
-    if final_crush_pressure > @crush_threshold
+    active_threshold = @time_over_threshold > 0 ? @crush_threshold - @crush_margin : @crush_threshold
+    if final_crush_pressure > active_threshold
+      @time_over_threshold += currentTime.getTickUnit()
+    else
+      @time_over_threshold = 0.0
+    end
+    if @time_over_threshold >= @crush_duration
       crush_agent!
       @last_net_force = 0.0
       return 0.0

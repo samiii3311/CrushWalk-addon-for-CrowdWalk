@@ -597,6 +597,19 @@ def apply_simulator_and_launcher():
         replace='"Walking: %d  Generated: %d  Evacuated(Stuck): %d(%d) / %d Crushed: %d / %d"',
         marker="Evacuated(Stuck): %d(%d) / %d Crushed: %d / %d",
     )
+    # The Stuck-branch format string above gains a 6th %d (Crushed: %d / %d),
+    # but its String.format call args end differently from the non-stuck
+    # branch (numOfStuckAgents() instead of numOfEvacuatedAgents()), so the
+    # patch at line 582 never matches it. Without this, getEvacuatedCountStatus()
+    # throws MissingFormatArgumentException the first time an agent is stuck.
+    patch_file_exact(
+        "EvacuationSimulator.java",
+        search='                    agentHandler.numOfStuckAgents(),\n'
+               '                    agentHandler.getMaxAgentCount());',
+        replace='                    agentHandler.numOfStuckAgents(),\n'
+                '                    agentHandler.getMaxAgentCount(), agentHandler.numOfCrushed(), agentHandler.getMaxAgentCount());',
+        marker='numOfStuckAgents(),\n                    agentHandler.getMaxAgentCount(), agentHandler.numOfCrushed()',
+    )
 
     # BasicSimulationLauncher.java
     launcher_check = """        finished = simulator.updateEveryTick();

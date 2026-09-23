@@ -311,6 +311,7 @@ class Test < RubyAgentBase
       # --- FORWARD FLOW (Same Lane) ---
       laneWidth = virtualPlace.getLaneWidth()
       myTurnIsOver = false
+      behind = []
 
       virtualPlace.getLane().each do |agent|
         agentPos = agent.currentPlace.getAdvancingDistance()
@@ -329,8 +330,8 @@ class Test < RubyAgentBase
             # share: a lane holds a whole row of people side by side (laneWidth of them), and one
             # agent's push is spread over the row it pushes on -- counting it in full for each
             # agent in front would multiply pressure by laneWidth every row (-> infinity).
-            physicalAgent << { agent: agent, dx: agentPos - startPos, dy: 0.0, behind: true,
-                               share: 1.0 / [laneWidth, 1].max }
+            behind << { agent: agent, dx: agentPos - startPos, dy: 0.0, behind: true,
+                        share: 1.0 / [laneWidth, 1].max }
           end
           next
         end
@@ -345,6 +346,11 @@ class Test < RubyAgentBase
         bucket = (dx <= @physicalThreshold) ? physicalAgent : socialAgent
         bucket << { agent: agent, dx: dx, dy: dy }
       end
+
+      # Only the nearest row behind (laneWidth closest agents) pushes on us directly; rows further
+      # back reach us through that row's passed-on pressure. Counting them directly as well would
+      # count each person several times (rows are ~0.2 m apart in a jam) -> exponential blow-up.
+      physicalAgent.concat(behind.max_by([laneWidth, 1].max) { |b| b[:dx] })
 
       remainingDist -= availableDistance
       break if remainingDist <= 0

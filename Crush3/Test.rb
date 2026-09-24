@@ -328,7 +328,9 @@ class Test < RubyAgentBase
           # People directly behind push us forward: keep them as physical contacts (dx < 0,
           # directly behind -> dy = 0). Current link only; crushed bodies behind don't push.
           # ponytail: agents behind on the previous link are not seen; add if merges need it.
-          if distanceSoFar == 0.0 && startPos - agentPos <= @physicalThreshold && !agent.isGhost()
+          # Only bodies actually touching (within physicalSpace, not the 0.9 m social range) pass
+          # a push on; a gap anywhere in a loose queue breaks the chain.
+          if distanceSoFar == 0.0 && startPos - agentPos <= @physicalSpace && !agent.isGhost()
             # share: a lane holds a whole row of people side by side (laneWidth of them), and one
             # agent's push is spread over the row it pushes on -- counting it in full for each
             # agent in front would multiply pressure by laneWidth every row (-> infinity).

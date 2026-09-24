@@ -25,7 +25,7 @@
     "fields": ["push_force", "social_force", "compression_pressure", "raw_pressure", "time_over_threshold", "link_direction", "speed_fwd", "speed_bwd"]
     },
     "crushThreshold":1112.0,  // N, Kroll et al. 2017
-    "pressureTransfer":1.0,   // share of received pressure passed to the agent in front (1 = full, A->B->C)
+    "pressureTransfer":0.95,   // share of received pressure passed to the agent in front (1 = full, A->B->C)
     "contactBraking":true,    // SFM repulsion also from people ahead within contact range (false = old behaviour)
     "crushMargin":50.0,      // N; once over crushThreshold, keeps counting down to crushThreshold - crushMargin
     "crushDuration":240.0,   // seconds above crushThreshold in a row before crush (Kroll et al. 2017: 4-6 min)

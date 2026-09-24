@@ -47,7 +47,7 @@ TARGET = "max_compression_pressure"
 NOT_FEATURES = {"scenario_id", "link_id", TICK, "target", "crush_now", "fold"}  # ids + label-ish
 # Simulated forces no camera/sensor could measure in real life. --observable-only drops every
 # column whose name contains one of these (current force, push/social force, neighbour forces).
-SIM_ONLY = ("force", "pressure", "compression")
+SIM_ONLY = ("force", "pressure", "compression", "time_over_threshold")
 
 
 def add_target(df, horizon):

@@ -132,6 +132,7 @@ class Test < RubyAgentBase
     telemetry_data = {
       pressure: @last_crush_pressure,
       raw_pressure: @last_raw_pressure,
+      time_over_threshold: @time_over_threshold,
       speed: _speed,
       empty_speed: @desired_empty_speed,
       net_force: @last_net_force,

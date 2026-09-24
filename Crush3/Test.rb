@@ -445,7 +445,9 @@ class Test < RubyAgentBase
 
       # Accumulate RAW Vectors and Scalars
       if incoming_force_mag > 0.0
-        raw_net_force_x += incoming_force_mag * dir_x
+        # A push from behind only compresses (pressure); it must not accelerate us forward,
+        # or the crowd behind shoves the front through the bottleneck and no queue forms.
+        raw_net_force_x += incoming_force_mag * dir_x unless data[:behind]
         raw_crush_pressure += incoming_force_mag
       end
     end

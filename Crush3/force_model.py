@@ -142,7 +142,7 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
             fold_scores.append({"fold": name, "model": k, **scores(te.target, p)})
         best = min(models, key=lambda k: mean_absolute_error(te.target, preds[k]))
         imp = permutation_importance(models[best], te[features], te.target, scoring="neg_mean_absolute_error",
-                                     n_repeats=3, random_state=0, n_jobs=4)  # each worker gets a copy of the forest; -1 (28) filled /dev/shm
+                                     n_repeats=3, random_state=0, n_jobs=1)  # worker processes each get a copy of the forest; even 4 filled /dev/shm
         importances.append(pd.Series(imp.importances_mean, index=features, name=name))
         keep = [c for c in ["scenario_id", "map_file", "link_id", TICK] if c in te]
         oof.append(te[keep].assign(fold=name, true=te.target.to_numpy(),

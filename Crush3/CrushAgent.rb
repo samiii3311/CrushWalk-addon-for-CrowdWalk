@@ -364,10 +364,12 @@ class CrushAgent < RubyAgentBase
       break if nextLink.nil?
 
       if @javaAgent.getSpeedModel().to_s.include?("CrossingModel")
-        distPastNode = -(distanceSoFar + availableDistance)
+        # distance ahead to the node, positive (vanilla passes -relativePos, WalkAgent.java:1003).
+        # It was negated here, and exp(a2 * (personalSpace - dist)) went to ~1e12 at crossroads.
+        distToNode = distanceSoFar + availableDistance
         totalCrossingForce += @javaAgent.send(:calcNodeCrossingForce, currentTime,
                                               virtualPlace.getLink(), nextLink,
-                                              virtualPlace.getHeadingNode(), distPastNode)
+                                              virtualPlace.getHeadingNode(), distToNode)
       end
 
       virtualPlace.transitTo(nextLink)

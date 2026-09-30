@@ -20,7 +20,7 @@ Per-record run info:
   prev_width_ratio   widest upstream width / own width (>1 = narrowing into this link)
 
 Direction: each link is an arc from->to. If the CSV has mean_link_direction
-(link_logging.fields contains "link_direction", logged by Test.rb as +1 for
+(link_logging.fields contains "link_direction", logged by CrushAgent.rb as +1 for
 from->to / -1 for to->from) and a link ever carries backward agents, it is
 treated as two-way and also gets a to->from arc. Without that column every
 link is one-way (from->to), so old CSVs still work.

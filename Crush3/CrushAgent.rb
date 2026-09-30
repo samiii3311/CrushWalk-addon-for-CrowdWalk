@@ -5,7 +5,7 @@ require 'PhysicsBlackboard.rb'
 require 'GhostAgentManager.rb'
 require 'TelemetryHandler.rb'
 
-class Test < RubyAgentBase
+class CrushAgent < RubyAgentBase
 
   TriggerFilter = [
     "calcSpeed"
@@ -18,6 +18,7 @@ class Test < RubyAgentBase
   @@dbg_register_push = 0
   @@dbg_max_raw_pressure = 0.0
   @@dbg_last_tick = -1
+  @@dbg_spikes = 0
 
   def initialize(agent, config, fallback)
     super(agent, config, fallback)
@@ -455,6 +456,21 @@ class Test < RubyAgentBase
       end
     end
 
+    # ponytail: temporary SPIKE dump for the crossroads 1e13 N jump (seed_0/crossroads_002/run_2, t=450-480).
+    # Remove once the cause is fixed.
+    if raw_crush_pressure > 1.0e4 && @@dbg_spikes < 5
+      @@dbg_spikes += 1
+      $stdout.puts "SPIKE t=#{currentTime.getRelativeTime()} agent=#{getAgentId()} link=#{getCurrentLinkId()} " \
+        "raw=#{raw_crush_pressure} mass=#{@my_mass} lane=#{@javaAgent.currentPlace.getLaneWidth()}"
+      physicalAgent.each do |d|
+        o = d[:agent].getID()
+        $stdout.puts "  other=#{o} dx=#{d[:dx]} dy=#{d[:dy]} behind=#{d[:behind] ? 1 : 0} share=#{d[:share]} " \
+          "hit=#{has_blackboard_hit?(o, @javaAgent.getID(), currentTime) ? get_blackboard_hit_accel(o, @javaAgent.getID(), currentTime) : '-'} " \
+          "mass=#{PhysicsBlackboard.instance.get_mass(o)} drive=#{PhysicsBlackboard.instance.get_drive(o)} " \
+          "pressure=#{PhysicsBlackboard.instance.get_pressure(o)} accel=#{PhysicsBlackboard.instance.get_accel(o.to_s)}"
+      end
+      $stdout.flush
+    end
     @@dbg_max_raw_pressure = raw_crush_pressure if raw_crush_pressure > @@dbg_max_raw_pressure
     @last_raw_pressure = raw_crush_pressure
     PhysicsBlackboard.instance.log_pressure(getAgentId(), raw_crush_pressure)  # passed on to the agent in front

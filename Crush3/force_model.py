@@ -2,10 +2,13 @@
 """
 force_model.py
 
-First simple regression check: predict a link's max_compression_pressure
-`--horizon` ticks ahead from its current state plus previous/next-link context
-(output of link_context.py). Whether that predicted force means "crush" is a
-separate thresholding step, later.
+First simple regression check: predict, `--horizon` ticks ahead, a link's
+  pressure  max_compression_pressure (N)
+  held      max_time_over_threshold (s): longest anyone on the link has stayed over
+            crushThreshold in a row; crushed at crushDuration (240 s)
+from its current state plus previous/next-link context (output of link_context.py).
+Each target gets its own model and its own <out-dir>/<target>/ folder. Whether the
+predicted pressure + held time mean "crush" is a separate thresholding step, later.
 
 Reports, for RandomForest and XGBoost against two baselines:
   - MAE and RMSE (N) on held-out data (per fold, and mean +/- std over folds)
@@ -24,6 +27,7 @@ so a random split would leak the answer):
 
 Usage (on the Linux machine):
     python3 force_model.py crush.duckdb --horizon 10 --cv 5 --out-dir force_model_cv
+    python3 force_model.py crush.duckdb --cv 5 --target held        # only the held-time model
     python3 force_model.py crush.duckdb --horizon 10 --holdout-map all --out-dir force_model_maps
     python3 force_model.py crush.duckdb --horizon 10 --cv 5 --observable-only --out-dir force_model_obs
     python3 force_model.py --selftest
@@ -44,17 +48,18 @@ from xgboost import XGBRegressor
 
 TICK = "current_traveling_period"
 TARGET = "max_compression_pressure"
+TARGETS = {"pressure": (TARGET, "N"), "held": ("max_time_over_threshold", "s")}  # --target name -> (column, unit)
 NOT_FEATURES = {"scenario_id", "link_id", TICK, "target", "crush_now", "fold"}  # ids + label-ish
 # Simulated forces no camera/sensor could measure in real life. --observable-only drops every
 # column whose name contains one of these (current force, push/social force, neighbour forces).
 SIM_ONLY = ("force", "pressure", "compression", "time_over_threshold")
 
 
-def add_target(df, horizon):
-    """target = same link's max_compression_pressure `horizon` ticks later.
-    A link with no row at t+h had no agents -> 0 N (the logger skips empty links)."""
+def add_target(df, horizon, target=TARGET):
+    """target = same link's `target` column `horizon` ticks later.
+    A link with no row at t+h had no agents -> 0 (the logger skips empty links)."""
     keys = ["link_id"] + (["scenario_id"] if "scenario_id" in df else [])
-    fut = df[keys + [TICK, TARGET]].assign(**{TICK: df[TICK] - horizon}).rename(columns={TARGET: "target"})
+    fut = df[keys + [TICK, target]].assign(**{TICK: df[TICK] - horizon}).rename(columns={target: "target"})
     df = df.merge(fut, on=keys + [TICK], how="left")
     last_tick = df.groupby("scenario_id")[TICK].transform("max") if "scenario_id" in df else df[TICK].max()
     df = df[df[TICK] + horizon <= last_tick]  # future unknown past the end of the run
@@ -109,8 +114,9 @@ def new_models():
     }
 
 
-def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout_map=None):
-    df = add_target(df, horizon)
+def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout_map=None, target=TARGET, unit="N"):
+    print(f"\n######## target: {target} ({unit}), {horizon} ticks ahead ########")
+    df = add_target(df, horizon, target)
     features = [c for c in df.columns if c not in NOT_FEATURES and pd.api.types.is_numeric_dtype(df[c])]
     if observable_only:
         dropped = [c for c in features if any(k in c for k in SIM_ONLY)]
@@ -123,10 +129,10 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
     for name, test in folds:
         train, te = df[~test], df[test]
         print(f"-- {name}: train {len(train):,} rows, test {len(te):,} rows; "
-              f"test target mean {te.target.mean():.1f} N, max {te.target.max():.1f} N")
+              f"test target mean {te.target.mean():.1f} {unit}, max {te.target.max():.1f} {unit}")
         preds = {
             "baseline: train mean": np.full(len(te), train.target.mean()),
-            "baseline: force now": te[TARGET].to_numpy(),  # "nothing changes" -- the model must beat this
+            "baseline: now": te[target].to_numpy(),  # "nothing changes" -- the model must beat this
         }
         models = new_models()
         for m_name, m in models.items():
@@ -136,7 +142,7 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
             fold_scores.append({"fold": name, "model": k, **scores(te.target, p)})
         best = min(models, key=lambda k: mean_absolute_error(te.target, preds[k]))
         imp = permutation_importance(models[best], te[features], te.target, scoring="neg_mean_absolute_error",
-                                     n_repeats=3, random_state=0, n_jobs=-1)
+                                     n_repeats=3, random_state=0, n_jobs=4)  # each worker gets a copy of the forest; -1 (28) filled /dev/shm
         importances.append(pd.Series(imp.importances_mean, index=features, name=name))
         keep = [c for c in ["scenario_id", "map_file", "link_id", TICK] if c in te]
         oof.append(te[keep].assign(fold=name, true=te.target.to_numpy(),
@@ -144,7 +150,7 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
 
     per_fold = pd.DataFrame(fold_scores)
     summary = per_fold.groupby("model", sort=False)[["MAE", "RMSE"]].agg(["mean", "std"])
-    print("\n== accuracy over folds (lower is better, N; std = spread across folds) ==")
+    print(f"\n== accuracy over folds (lower is better, {unit}; std = spread across folds) ==")
     print(summary.round(2).to_string())
     if len(folds) > 1:
         print("\n== MAE per fold ==")
@@ -164,7 +170,7 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
     err = pd.DataFrame({"band": bands, "abs_err": (oof[f"pred_{best}"] - y).abs(), "bias": oof[f"pred_{best}"] - y})
     by_band = err.groupby("band", observed=True).agg(rows=("abs_err", "size"), MAE=("abs_err", "mean"),
                                                       mean_bias=("bias", "mean"))
-    print(f"\n== {best} error by true-force band, all held-out rows (negative bias = under-predicts) ==")
+    print(f"\n== {best} error by true-target band ({unit}), all held-out rows (negative bias = under-predicts) ==")
     print(by_band.round(2).to_string())
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -193,13 +199,13 @@ def selftest():
 
     s, _ = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "default")
     for m in ("RandomForest", "XGBoost"):
-        assert mae(s, m) < mae(s, "baseline: force now") and mae(s, m) < mae(s, "baseline: train mean"), m
+        assert mae(s, m) < mae(s, "baseline: now") and mae(s, m) < mae(s, "baseline: train mean"), m
 
     # --cv 3: every run tested exactly once, never in train and test of the same fold -- but a MAP
     # can be in both (other runs on it), which is the "known layout, new crowd" test
     s, oof = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "cv", cv=3)
     assert oof.groupby("scenario_id").fold.nunique().eq(1).all() and oof.scenario_id.nunique() == 6
-    assert oof.fold.nunique() == 3 and mae(s, "RandomForest") < mae(s, "baseline: force now")
+    assert oof.fold.nunique() == 3 and mae(s, "RandomForest") < mae(s, "baseline: now")
     d = add_target(df, 5)
     assert any(set(d.map_file[m]) & set(d.map_file[~m]) for _, m in make_folds(d, cv=3))
 
@@ -220,13 +226,20 @@ def selftest():
         out_dir=tmp / "obs", cv=3, observable_only=True)
     assert set(pd.read_csv(tmp / "obs" / "importance.csv").feature) == {"prev_inflow", "agent_count"}
     assert add_target(df, 5).set_index([TICK, "scenario_id"]).target[(0, "r0")] == df[TARGET][5]
+
+    # held-time target: its own column is the target, and observable-only hides it from the features
+    held = df.assign(max_time_over_threshold=(df[TARGET] > 500).groupby(df.scenario_id).cumsum().astype(float))
+    assert add_target(held, 5, "max_time_over_threshold").target[0] == held.max_time_over_threshold[5]
+    run(held, horizon=5, test_frac=0.2, out_dir=tmp / "held", cv=3, observable_only=True,
+        target="max_time_over_threshold", unit="s")
+    assert "max_time_over_threshold" not in set(pd.read_csv(tmp / "held" / "importance.csv").feature)
     print("\nselftest ok")
 
 
 def main():
     if sys.argv[1:] == ["--selftest"]:
         return selftest()
-    p = argparse.ArgumentParser(description="Predict max_compression_pressure ahead; report MAE/RMSE.")
+    p = argparse.ArgumentParser(description="Predict link pressure and held time ahead; report MAE/RMSE.")
     p.add_argument("data", type=Path, help="DuckDB file filled by link_context.py (all runs in link_ticks), or a CSV")
     p.add_argument("--horizon", type=int, default=10, help="ticks ahead to predict (default 10)")
     split = p.add_mutually_exclusive_group()
@@ -234,7 +247,9 @@ def main():
     split.add_argument("--holdout-map", default=None, metavar="MAP",
                        help="test on this map_file, train on the others; 'all' = leave-one-map-out")
     p.add_argument("--test-frac", type=float, default=0.2, help="default split only")
-    p.add_argument("--out-dir", type=Path, default=Path("force_model_out"))
+    p.add_argument("--target", nargs="+", choices=TARGETS, default=list(TARGETS),
+                   help="what to predict: pressure (N) and/or held (s above crushThreshold); default both")
+    p.add_argument("--out-dir", type=Path, default=Path("force_model_out"), help="results go in <out-dir>/<target>/")
     p.add_argument("--observable-only", action="store_true",
                    help="drop simulated force/pressure columns (not measurable in real life) from the features")
     args = p.parse_args()
@@ -245,7 +260,13 @@ def main():
         from link_context import TABLE
         with duckdb.connect(str(args.data), read_only=True) as con:
             df = con.table(TABLE).df()
-    run(df, args.horizon, args.test_frac, args.out_dir, args.observable_only, args.cv, args.holdout_map)
+    for name in args.target:
+        col, unit = TARGETS[name]
+        if col not in df:
+            print(f"\n[!] skipping target {name}: no {col} column (add time_over_threshold to link_logging.fields)")
+            continue
+        run(df, args.horizon, args.test_frac, args.out_dir / name, args.observable_only, args.cv,
+            args.holdout_map, col, unit)
 
 
 if __name__ == "__main__":

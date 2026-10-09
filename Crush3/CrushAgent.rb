@@ -54,6 +54,7 @@ class CrushAgent < RubyAgentBase
     # Share of an agent's received pressure it passes on to the agent in front (A -> B -> C).
     # 1.0 = full: the front of a queue feels everyone behind it. Below 1 the build-up levels
     # off at (own push) / (1 - pressureTransfer), e.g. ~750 N at 0.9 -- too low to ever crush.
+    # The same share is kept when a push from the front is passed back down the queue.
     # ponytail: uncited knob; calibrate against measured crowd forces if a source turns up.
     @pressure_transfer = props.getDouble("pressureTransfer", 1.0)
     # SFM repulsion from people ahead also within contact range (see add_neighbor).
@@ -405,6 +406,7 @@ class CrushAgent < RubyAgentBase
 
     raw_net_force_x = 0.0
     raw_crush_pressure = 0.0
+    pressure_from_behind = 0.0
     total_body_drag = 0.0
 
     physicalAgent.each do |data|
@@ -450,16 +452,28 @@ class CrushAgent < RubyAgentBase
 
       # Accumulate RAW Vectors and Scalars
       if incoming_force_mag > 0.0
-        # A push from behind only compresses (pressure); it must not accelerate us forward,
-        # or the crowd behind shoves the front through the bottleneck and no queue forms.
-        raw_net_force_x += incoming_force_mag * dir_x unless data[:behind]
+        if data[:behind]
+          # A push from behind only compresses (pressure); it must not accelerate us forward,
+          # or the crowd behind shoves the front through the bottleneck and no queue forms.
+          pressure_from_behind += incoming_force_mag
+        else
+          # A push from the front moves us back, and we pass it to the agent behind us
+          # (register_push). It loses the same share per person as the forward pressure does.
+          # Without the loss, a single-file queue (lane width 1: everyone has dy = 0, so
+          # dir_x = -1) passed it on in full and every agent added its own braking:
+          # 7.6e5 N with 187 people on a 1.7 m link. Wider lanes hid this, because the
+          # sideways offset already scales the push down by dx/distance.
+          raw_net_force_x += @pressure_transfer * incoming_force_mag * dir_x
+        end
         raw_crush_pressure += incoming_force_mag
       end
     end
 
     @@dbg_max_raw_pressure = raw_crush_pressure if raw_crush_pressure > @@dbg_max_raw_pressure
     @last_raw_pressure = raw_crush_pressure
-    PhysicsBlackboard.instance.log_pressure(getAgentId(), raw_crush_pressure)  # passed on to the agent in front
+    # Only what came from behind is passed on to the agent in front. Passing on the total sent a
+    # push from the front straight back to the front, where the forward chain multiplied it again.
+    PhysicsBlackboard.instance.log_pressure(getAgentId(), pressure_from_behind)
 
     # ---------------------------------------------------------
     # 3. CRUSH PRESSURE — uses the HIGH threshold (injury-relevant)

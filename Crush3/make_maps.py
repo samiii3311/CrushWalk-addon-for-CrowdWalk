@@ -161,6 +161,13 @@ def crossroads(r):
     dirs = {"W": (-1, 0), "E": (1, 0), "N": (0, -1), "S": (0, 1)}
     widths = {d: r.uniform(3, 8) for d in dirs}
     widths[r.choice(list(dirs))] = r.uniform(1.5, 3)  # one narrow arm
+    # Spawn arms are at least 2 m (2 lanes). The simulator's lane count is int(width), and a crowd
+    # spawned on a 1-lane link stands about 6 people per metre in one line, where the contact-force
+    # model is not valid (pressure reached 1e5-1e7 N there). Clamped, not redrawn, so every other
+    # map of the same seed stays as it was. See PHYSICS_NOTES.md.
+    for d in dirs:
+        if two_way or d in ("W", "S"):
+            widths[d] = max(widths[d], 2.0)
     for d, (dx, dy) in dirs.items():
         L, stub = r.uniform(50, 150), r.uniform(20, 40)
         inner = m.node(dx * L, dy * L)
@@ -321,6 +328,9 @@ def selftest():
         goals = {n.get("id") for n in ET.parse(out / row["map"] / "Map.xml").getroot().iter("Node")
                  if any(t.text.startswith(("GOAL", "Goal")) for t in n.iter("tag"))}
         assert set(links.from_node) | goals == set(links.from_node) | set(links.to_node), row["map"]
+    # no single-file spawn arm in crossroads
+    assert all(row[f"width_{d}"] >= 2.0 for row in rows if row["family"] == "crossroads"
+               for d in ("WENS" if row["two_way"] else "WS"))
     # runs on one map share its Map.xml but get different crowds
     r0, r1 = rows[0], rows[1]
     assert r0["map"] == r1["map"] and r0["total_agents"] != r1["total_agents"]

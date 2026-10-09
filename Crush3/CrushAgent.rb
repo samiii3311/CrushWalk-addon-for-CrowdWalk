@@ -514,6 +514,15 @@ class CrushAgent < RubyAgentBase
   def calcSocial(socialAgent, lowerBound, totalCrossingForce)
     totalCrossingForce ||= 0.0
 
+    # The crossing force (slowing for people crossing the node ahead) adds one term per recent
+    # crosser, up to ~160 m/s^2 each right at the node, so it can reach thousands of m/s^2.
+    # Vanilla only uses it to stop the agent (speed is clamped at 0). Here accel also becomes a
+    # physical push on the agent behind (register_push), so it must be capped at the braking
+    # bound like the neighbour forces below. The cap used to apply only inside the loop, so an
+    # agent with nobody ahead (the one closest to the node) kept the full value: 1e4-1e7 N at
+    # crossroads. Only acts when there is a crossing force, so other families are unchanged.
+    return lowerBound if totalCrossingForce < 0.0 && totalCrossingForce <= lowerBound
+
     # Individualized desired speed (getEmptySpeed() * this agent's speed_factor)
     empty_speed = @desired_empty_speed
 

@@ -13,12 +13,15 @@ first alarm came (median_warning_s in results.csv).
                            training along the bottom.
   sweep_warning.png        how far ahead? One bar per window and model, trained on the
                            largest size.
+  sweep_alarms.png         the same bars for the share of alarms that were real
+                           (alarms_real_share in results.csv).
 
 sweep.py's own graph plots warned_share, which came out near 100% for every window on the
 114-run sweep, so its lines sit on top of each other. Warning time differs between windows.
 
 Usage:
     python3 sweep_plot.py fm_sweep_1way/results.csv        # graphs go next to the csv
+    python3 sweep_plot.py fm_extra/results.csv --models RandomForest,XGBoost,RF_history,XGB_history
     python3 sweep_plot.py --selftest
 """
 
@@ -28,7 +31,13 @@ from pathlib import Path
 
 import pandas as pd
 
-COLOURS = {"RandomForest": "#2171b5", "XGBoost": "#E69F00"}
+COLOURS = {"RandomForest": "#2171b5", "XGBoost": "#E69F00", "RF_history": "#08306b", "XGB_history": "#a66a00"}
+NAMES = {"RF_history": "RandomForest + history", "XGB_history": "XGBoost + history"}  # legend text, if not the model's own name
+# the bar graphs: file name -> (results.csv column, multiplier, title, y-axis label)
+BARS = {"sweep_warning.png": ("median_warning_s", 1, "Warning time by window, trained on all runs",
+                              "Typical warning before an event (s)"),
+        "sweep_alarms.png": ("alarms_real_share", 100, "Alarms that were real, by window, trained on all runs",
+                             "Alarms that were real (%)")}
 # one colour and marker per window (Okabe-Ito colours, distinguishable with colour-blindness)
 LINE_COLOURS = ["#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7"]
 MARKERS = ["o", "s", "^", "D", "v"]
@@ -71,27 +80,31 @@ def plot_data(plt, res, model, path):
     print(f"graph: {path}")
 
 
-def plot_warning(plt, res, path):
+def plot_bars(plt, res, path, col, scale, title, ylabel):
     full = largest(res)
+    full = full.assign(**{col: full[col] * scale})
     windows = sorted(full.window_s.unique())
     models = [m for m in COLOURS if m in set(full.model)] + sorted(set(full.model) - set(COLOURS))
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=200)
     width = 0.8 / len(models)
     for j, m in enumerate(models):
-        vals = [float(full[(full.model == m) & (full.window_s == w)].median_warning_s.iloc[0]) for w in windows]
+        vals = [float(full[(full.model == m) & (full.window_s == w)][col].iloc[0]) for w in windows]
         xs = [i - 0.4 + width * (j + 0.5) for i in range(len(windows))]
-        ax.bar(xs, vals, width * 0.92, color=COLOURS.get(m, "#888888"), label=m)
+        ax.bar(xs, vals, width * 0.92, color=COLOURS.get(m, "#888888"), label=NAMES.get(m, m))
         for x, v in zip(xs, vals):
-            ax.text(x, v + 1.5, f"{v:.0f}", ha="center", fontsize=11, fontweight="bold")
+            ax.text(x, v + 1.5, f"{v:.0f}", ha="center", fontsize=11 if len(models) <= 2 else 9, fontweight="bold")
     ax.set_xticks(range(len(windows)), [label(w) for w in windows], fontsize=11)
-    ax.set_title("Warning time by window, trained on all runs", loc="left", fontsize=13, fontweight="bold")
+    ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
     ax.set_xlabel("Window (how far ahead the model looks)", fontsize=11)
-    ax.set_ylabel("Typical warning before an event (s)", fontsize=11)
-    ax.set_ylim(0, max(100, full.median_warning_s.max() * 1.2))
+    ax.set_ylabel(ylabel, fontsize=11)
+    ax.set_ylim(0, max(100, full[col].max() * 1.2))
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", color="#e4e4e2", lw=0.8)
     ax.set_axisbelow(True)
-    ax.legend(frameon=False, fontsize=11, loc="upper left", ncols=len(models))
+    if len(models) > 2:  # too wide for one row above the bars: beside the graph, like plot_data
+        ax.legend(frameon=False, fontsize=11, loc="center left", bbox_to_anchor=(1.01, 0.5))
+    else:
+        ax.legend(frameon=False, fontsize=11, loc="upper left", ncols=len(models))
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
@@ -100,7 +113,8 @@ def plot_warning(plt, res, path):
 
 def show_numbers(res):
     """Print exactly what the graphs plot."""
-    for col, title, scale in [("median_warning_s", "typical warning time (s)", 1)]:
+    for col, title, scale in [("median_warning_s", "typical warning time (s)", 1),
+                              ("alarms_real_share", "alarms that were real (%)", 100)]:
         print(f"\n== {title}; columns = runs trained on ==")
         t = res.assign(runs=res.train_runs.astype(str), value=res[col] * scale)
         t = t.pivot_table(index=["model", "window_s"], columns="runs", values="value")
@@ -111,7 +125,7 @@ def show_numbers(res):
 def selftest():
     assert label(30) == "30 s" and label(120) == "2 min" and label(600) == "10 min"
     res = pd.DataFrame({"model": "RandomForest", "window_s": [30, 30, 120, 120], "train_runs": [12, "all"] * 2,
-                        "crush_runs": [3.0, 25.6, 3.2, 25.6], "caught_share": [0.6, 0.8, 0.4, 0.7],
+                        "crush_runs": [3.0, 25.6, 3.2, 25.6], "alarms_real_share": [0.3, 0.3, 0.2, 0.33],
                         "median_warning_s": [25.0, 26.0, 45.0, 65.0]})
     full = largest(res)
     assert list(full.window_s) == [30, 120] and list(full.median_warning_s) == [26.0, 65.0]
@@ -124,8 +138,11 @@ def main():
         return selftest()
     p = argparse.ArgumentParser(description="Draw readable graphs from a sweep.py results.csv.")
     p.add_argument("results", type=Path, help="results.csv written by sweep.py")
+    p.add_argument("--models", default=None, help="only these models, comma-separated (default: every model in the csv)")
     args = p.parse_args()
     res = pd.read_csv(args.results)
+    if args.models:
+        res = res[res.model.isin(args.models.split(","))]
     show_numbers(res)
     try:
         import matplotlib
@@ -136,7 +153,8 @@ def main():
     out = args.results.parent
     for model in res.model.unique():
         plot_data(plt, res, model, out / f"sweep_data_{model}.png")
-    plot_warning(plt, res, out / "sweep_warning.png")
+    for name, bar in BARS.items():
+        plot_bars(plt, res, out / name, *bar)
 
 
 if __name__ == "__main__":

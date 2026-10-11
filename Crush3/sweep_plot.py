@@ -83,6 +83,7 @@ def plot_data(plt, res, model, path):
 def plot_bars(plt, res, path, col, scale, title, ylabel):
     full = largest(res)
     full = full.assign(**{col: full[col] * scale})
+    bars = f"{col}_lo" in full  # error_bars.py adds <col>_lo / <col>_hi: the 95% range, drawn as a line through the bar
     windows = sorted(full.window_s.unique())
     models = [m for m in COLOURS if m in set(full.model)] + sorted(set(full.model) - set(COLOURS))
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=200)
@@ -91,16 +92,23 @@ def plot_bars(plt, res, path, col, scale, title, ylabel):
         vals = [float(full[(full.model == m) & (full.window_s == w)][col].iloc[0]) for w in windows]
         xs = [i - 0.4 + width * (j + 0.5) for i in range(len(windows))]
         ax.bar(xs, vals, width * 0.92, color=COLOURS.get(m, "#888888"), label=NAMES.get(m, m))
-        for x, v in zip(xs, vals):
-            ax.text(x, v + 1.5, f"{v:.0f}", ha="center", fontsize=11 if len(models) <= 2 else 9, fontweight="bold")
+        tops = vals
+        if bars:
+            lo, tops = ([float(full[(full.model == m) & (full.window_s == w)][f"{col}_{end}"].iloc[0]) * scale
+                         for w in windows] for end in ("lo", "hi"))
+            ax.vlines(xs, lo, tops, color="black", lw=1.2)
+        for x, v, top in zip(xs, vals, tops):
+            ax.text(x, top + 1.5, f"{v:.0f}", ha="center", fontsize=11 if len(models) <= 2 else 9, fontweight="bold")
     ax.set_xticks(range(len(windows)), [label(w) for w in windows], fontsize=11)
     ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
     ax.set_xlabel("Window (how far ahead the model looks)", fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)
-    ax.set_ylim(0, max(100, full[col].max() * 1.2))
+    ax.set_ylim(0, max(100, full[col].max() * 1.2, full[f"{col}_hi"].max() * scale * 1.1 if bars else 0))
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", color="#e4e4e2", lw=0.8)
     ax.set_axisbelow(True)
+    if bars:
+        ax.text(0, -0.2, "Black lines: 95% range when the runs are re-drawn at random.", transform=ax.transAxes, fontsize=9)
     if len(models) > 2:  # too wide for one row above the bars: beside the graph, like plot_data
         ax.legend(frameon=False, fontsize=11, loc="center left", bbox_to_anchor=(1.01, 0.5))
     else:
@@ -120,6 +128,10 @@ def show_numbers(res):
         t = t.pivot_table(index=["model", "window_s"], columns="runs", values="value")
         order = sorted(t.columns, key=lambda c: (not c.isdigit(), int(c) if c.isdigit() else 0))  # 12, 24, ..., all
         print(t[order].round(1).to_string())
+        if f"{col}_lo" in res:
+            print(f"\n== {title}: 95% range ==")
+            print(res.assign(lo=res[f"{col}_lo"] * scale, hi=res[f"{col}_hi"] * scale, value=res[col] * scale)
+                  .set_index(["model", "window_s"])[["lo", "value", "hi"]].round(1).to_string())
 
 
 def selftest():
@@ -152,7 +164,8 @@ def main():
         sys.exit("matplotlib is not installed (pip install matplotlib); the numbers above are what would be plotted")
     out = args.results.parent
     for model in res.model.unique():
-        plot_data(plt, res, model, out / f"sweep_data_{model}.png")
+        if res[res.model == model].train_runs.nunique() > 1:  # one training size has no line to draw
+            plot_data(plt, res, model, out / f"sweep_data_{model}.png")
     for name, bar in BARS.items():
         plot_bars(plt, res, out / name, *bar)
 

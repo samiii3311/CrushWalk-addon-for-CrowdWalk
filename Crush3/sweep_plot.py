@@ -97,8 +97,11 @@ def plot_bars(plt, res, path, col, scale, title, ylabel):
             lo, tops = ([float(full[(full.model == m) & (full.window_s == w)][f"{col}_{end}"].iloc[0]) * scale
                          for w in windows] for end in ("lo", "hi"))
             ax.vlines(xs, lo, tops, color="black", lw=1.2)
-        for x, v, top in zip(xs, vals, tops):
-            ax.text(x, top + 1.5, f"{v:.0f}", ha="center", fontsize=11 if len(models) <= 2 else 9, fontweight="bold")
+        for x, v in zip(xs, vals):
+            if bars:  # the line's top end belongs to the range, so the value goes inside the foot of the bar
+                ax.text(x, 2, f"{v:.0f}", ha="center", fontsize=7.5, fontweight="bold", color="white")
+            else:
+                ax.text(x, v + 1.5, f"{v:.0f}", ha="center", fontsize=11 if len(models) <= 2 else 9, fontweight="bold")
     ax.set_xticks(range(len(windows)), [label(w) for w in windows], fontsize=11)
     ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
     ax.set_xlabel("Window (how far ahead the model looks)", fontsize=11)

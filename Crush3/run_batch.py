@@ -290,7 +290,9 @@ def selftest():
     assert len(runs) == 18 and "seed_5/corridor_000/run_0" in runs and "seed_6/tree_000/run_1" in runs
     assert maps == 10  # new seed -> new maps
     assert not list((tmp / "logs").rglob("linkMetrics.csv"))  # moved into the DB
-    assert len(list((tmp / "logs").rglob("agents.csv"))) == 18  # kept (no --drop-agent-log)
+    # the per-agent log is kept (no --drop-agent-log), if prop.json has the agent logger switched on at all
+    agent_logs = 18 if "dynamic_logging" in read_json_c(HERE / "prop.json") else 0
+    assert len(list((tmp / "logs").rglob("agents.csv"))) == agent_logs
     # restart with the same arguments: only the 2 failures are retried
     run_batches(args, sim)
     log = pd.read_csv(tmp / "maps" / "runner_log.csv")

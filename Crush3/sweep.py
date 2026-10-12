@@ -16,6 +16,8 @@ after every run, so a stopped sweep still leaves them. Each run's own files are 
 
 Runs in the background by default and shows its log (<out-dir>/run.log) live: Ctrl-C only stops
 showing the log, `--stop` ends the job, `--foreground` runs it in the terminal (see background.py).
+A plain --out-dir name becomes a dated folder in the results folder, e.g. fm_sweep ->
+/mnt/ssd_1tb/crush/results/2026-10-12_fm_sweep (see results.py); ./fm_sweep stays where you are.
 
 Usage (on the Linux machine):
     python3 sweep.py crush.duckdb --out-dir fm_sweep
@@ -34,6 +36,7 @@ import numpy as np
 import pandas as pd
 
 import background
+import results
 from force_model import MODEL_SETS, TARGET, TICK, load_data, prepare, run
 
 FLAT_GAIN = 0.05  # a window counts as "flat" when its last step in training size gained less than this share of events
@@ -151,9 +154,11 @@ def main():
     background.add_args(p)
     args = p.parse_args()
     if args.replot:
+        args.replot = results.find(args.replot)
         return plot_sweep(pd.read_csv(args.replot), args.replot.parent, metric=args.metric)
     if not args.data:
         p.error("give the database, or --replot results.csv")
+    args.out_dir = results.new_dir(args.out_dir)
     background.start(args, args.out_dir / "run.log")
     sweep(load_data(args.data), [int(x) for x in args.windows.split(",")], [int(x) for x in args.runs.split(",")],
           args.out_dir, args.cv, args.threshold, MODEL_SETS[args.models])

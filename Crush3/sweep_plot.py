@@ -31,7 +31,10 @@ from pathlib import Path
 
 import pandas as pd
 
-COLOURS = {"RandomForest": "#2171b5", "XGBoost": "#E69F00", "RF_history": "#08306b", "XGB_history": "#a66a00"}
+import results
+
+COLOURS = {"RandomForest": "#2171b5", "XGBoost": "#E69F00", "RF_history": "#08306b", "XGB_history": "#a66a00",
+           "Holt": "#009E73"}
 NAMES = {"RF_history": "RandomForest + history", "XGB_history": "XGBoost + history"}  # legend text, if not the model's own name
 # the bar graphs: file name -> (results.csv column, multiplier, title, y-axis label)
 BARS = {"sweep_warning.png": ("median_warning_s", 1, "Warning time by window, trained on all runs",
@@ -41,6 +44,9 @@ BARS = {"sweep_warning.png": ("median_warning_s", 1, "Warning time by window, tr
 # one colour and marker per window (Okabe-Ito colours, distinguishable with colour-blindness)
 LINE_COLOURS = ["#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7"]
 MARKERS = ["o", "s", "^", "D", "v"]
+
+
+DODGE = 0.25  # crush runs: sideways gap between neighbouring windows' points when ranges are drawn
 
 
 def label(window_s):
@@ -55,14 +61,20 @@ def largest(res):
 def plot_data(plt, res, model, path):
     r = res[res.model == model]
     windows = sorted(r.window_s.unique())
+    ranges = "median_warning_s_lo" in r  # error_bars.py adds the 95% range: a vertical line through each point
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=200)
     lines = []
     for i, w in enumerate(windows):
         g = r[r.window_s == w].sort_values("crush_runs")
         y = g.median_warning_s.to_numpy()
+        # with ranges, each window's line is shifted a little sideways so the vertical lines don't hide each other
+        x = g.crush_runs.to_numpy() + (DODGE * (i - (len(windows) - 1) / 2) if ranges else 0)
+        colour = LINE_COLOURS[i % len(LINE_COLOURS)]
         # a colour and a marker shape per window, so the legend can be read without relying on colour alone
-        line, = ax.plot(g.crush_runs, y, color=LINE_COLOURS[i % len(LINE_COLOURS)], lw=2,
+        line, = ax.plot(x, y, color=colour, lw=2,
                         marker=MARKERS[i % len(MARKERS)], ms=6, label=f"{label(w)}  ({y[-1]:.0f} s)")
+        if ranges:
+            ax.vlines(x, g.median_warning_s_lo, g.median_warning_s_hi, color=colour, lw=1.2, alpha=0.8)
         lines.append((y[-1], line))
     lines.sort(key=lambda t: -t[0])  # legend top to bottom = line ends top to bottom
     ax.legend([l for _, l in lines], [l.get_label() for _, l in lines], title="Window (value at the right end)",
@@ -70,8 +82,13 @@ def plot_data(plt, res, model, path):
     ax.set_title(f"{model}: does more data help?", loc="left", fontsize=13, fontweight="bold")
     ax.set_xlabel("Crush runs used for training", fontsize=11)
     ax.set_ylabel("Typical warning before an event (s)", fontsize=11)
-    ax.set_ylim(0, max(100, r.median_warning_s.max() * 1.2))  # same scale as sweep_warning.png
+    top = r.median_warning_s_hi.max() * 1.1 if ranges else 0
+    ax.set_ylim(0, max(100, r.median_warning_s.max() * 1.2, top))  # same scale as sweep_warning.png
     ax.set_xlim(left=0)
+    if ranges:
+        ax.text(0, -0.2, "Vertical lines: 95% range when the test runs are re-drawn at random. "
+                         "Lines are shifted slightly sideways so the ranges can be told apart.",
+                transform=ax.transAxes, fontsize=8)
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", color="#e4e4e2", lw=0.8)
     fig.tight_layout()
@@ -133,8 +150,9 @@ def show_numbers(res):
         print(t[order].round(1).to_string())
         if f"{col}_lo" in res:
             print(f"\n== {title}: 95% range ==")
-            print(res.assign(lo=res[f"{col}_lo"] * scale, hi=res[f"{col}_hi"] * scale, value=res[col] * scale)
-                  .set_index(["model", "window_s"])[["lo", "value", "hi"]].round(1).to_string())
+            print(res.assign(lo=res[f"{col}_lo"] * scale, hi=res[f"{col}_hi"] * scale, value=res[col] * scale,
+                             runs=res.train_runs.astype(str))
+                  .set_index(["model", "window_s", "runs"])[["lo", "value", "hi"]].round(1).to_string())
 
 
 def selftest():
@@ -145,6 +163,7 @@ def selftest():
     full = largest(res)
     assert list(full.window_s) == [30, 120] and list(full.median_warning_s) == [26.0, 65.0]
     show_numbers(res)
+    show_numbers(res.assign(median_warning_s_lo=res.median_warning_s - 5, median_warning_s_hi=res.median_warning_s + 5))
     print("\nselftest ok")
 
 
@@ -155,6 +174,7 @@ def main():
     p.add_argument("results", type=Path, help="results.csv written by sweep.py")
     p.add_argument("--models", default=None, help="only these models, comma-separated (default: every model in the csv)")
     args = p.parse_args()
+    args.results = results.find(args.results)  # a short name is looked up in the results folder
     res = pd.read_csv(args.results)
     if args.models:
         res = res[res.model.isin(args.models.split(","))]

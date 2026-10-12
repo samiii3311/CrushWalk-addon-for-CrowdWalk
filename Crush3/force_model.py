@@ -34,6 +34,8 @@ so a random split would leak the answer):
 
 Runs in the background by default and shows its log (<out-dir>/run.log) live: Ctrl-C only stops
 showing the log, `--stop` ends the job, `--foreground` runs it in the terminal (see background.py).
+A plain --out-dir name becomes a dated folder in the results folder, e.g. fm_h120 ->
+/mnt/ssd_1tb/crush/results/2026-10-12_fm_h120 (see results.py); ./fm_h120 stays where you are.
 
 Usage (on the Linux machine):
     python3 force_model.py crush.duckdb --horizon 10 --cv 5 --out-dir force_model_cv
@@ -60,6 +62,7 @@ import background
 import baselines
 import models_main
 import models_other
+import results
 
 TICK = "current_traveling_period"
 TARGET = "max_compression_pressure"
@@ -390,7 +393,8 @@ def main():
     p.add_argument("--test-frac", type=float, default=0.2, help="default split only")
     p.add_argument("--target", nargs="+", choices=TARGETS, default=list(TARGETS),
                    help="what to predict: pressure (N) and/or held (s above crushThreshold); default both")
-    p.add_argument("--out-dir", type=Path, default=Path("force_model_out"), help="results go in <out-dir>/<target>/")
+    p.add_argument("--out-dir", type=Path, default=Path("force_model_out"),
+                   help="results go in <out-dir>/<target>/; a plain name becomes <results folder>/<date>_<name>")
     p.add_argument("--observable-only", action="store_true",
                    help="drop simulated force/pressure columns (not measurable in real life) from the features")
     p.add_argument("--at-horizon", action="store_true",
@@ -411,12 +415,13 @@ def main():
     background.stop_requested()
     background.add_args(p)
     args = p.parse_args()
+    args.out_dir = results.new_dir(args.out_dir)
     background.start(args, args.out_dir / "run.log")
     top = None
     if args.top_features:
         if not args.features_from:
             p.error("--top-features needs --features-from <importance.csv>")
-        top = list(pd.read_csv(args.features_from).feature[:args.top_features])
+        top = list(pd.read_csv(results.find(args.features_from)).feature[:args.top_features])
     models = MODEL_SETS[args.models]
     df = prepare(load_data(args.data), models, holt="pressure" in args.target)  # once, not once per target
     for name in args.target:

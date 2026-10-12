@@ -77,7 +77,8 @@ def stop_requested():
     if "--stop" in sys.argv:
         p = argparse.ArgumentParser()
         p.add_argument("--log", type=Path, required=True)
-        stop(p.parse_known_args()[0].log.expanduser())
+        import results
+        stop(results.find(p.parse_known_args()[0].log))  # fm_models/run.log is looked up in the results folder
 
 
 def start(args, default_log):

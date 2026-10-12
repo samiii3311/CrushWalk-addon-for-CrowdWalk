@@ -3,8 +3,8 @@
 error_bars.py
 
 How much could the sweep's numbers move by chance? No model is trained: this reads the
-predictions.csv that sweep.py already saved for each window (the folders
-trained on all runs, h<window>_runsall/) and gives a 95% range for
+predictions.csv that sweep.py already saved for each window and training size (the folders
+h<window>_runs<N>/) and gives a 95% range for
 
   median_warning_s     typical warning before an event
   alarms_real_share    share of alarms that were real
@@ -17,10 +17,17 @@ Each number is first recomputed from the predictions and compared with the cross
 model wrote, so a mismatch (wrong database, changed threshold) is reported instead of plotted.
 
 Writes one table that sweep_plot.py reads; with the _lo / _hi columns in it, its bar graphs
-get a black line through each bar.
+get a black line through each bar and its data-size graphs a line through each point.
+
+What the range covers: which runs happened to be tested. For a point trained on fewer runs it
+does NOT cover which training runs were picked (sweep.py picks one fixed set per size), so a
+bump in a data-size line can still be the luck of that pick.
+
+--all-runs-only reads just the h<window>_runsall/ folders, as this script did at first (faster).
 
 Usage (on the Linux machine):
     python3 error_bars.py crush.duckdb fm_sweep_1way fm_extra/history --out fm_errorbars/results.csv
+    python3 error_bars.py crush.duckdb fm_models --all-runs-only --out fm_models_ranges/results.csv
     python3 sweep_plot.py fm_errorbars/results.csv --models RandomForest,XGBoost,RF_history,XGB_history
     python3 error_bars.py --selftest
 """
@@ -33,6 +40,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import results
 from force_model import TARGET, TICK, first_crossings, load_data
 
 REPS = 2000
@@ -96,7 +104,23 @@ def check(row, folder):
                      "Is this the database and threshold the sweep used?")
 
 
+def cell_id(folder_name):
+    """'h120_runs48' -> (120, '48'); 'h30_runsall' -> (30, 'all'). None for any other folder."""
+    m = re.fullmatch(r"h(\d+)_runs(\d+|all)", folder_name)
+    return (int(m[1]), m[2]) if m else None
+
+
+def crush_runs(top):
+    """(window, training size) -> crush runs trained on, from the sweep's own results.csv: the x-axis of the
+    data-size graphs. Empty if the folder has no results.csv."""
+    if not (top / "results.csv").exists():
+        return {}
+    r = pd.read_csv(top / "results.csv")
+    return {(int(w), str(n)): float(c) for w, n, c in zip(r.window_s, r.train_runs, r.crush_runs)}
+
+
 def selftest():
+    assert cell_id("h120_runs48") == (120, "48") and cell_id("h30_runsall") == (30, "all") and cell_id("pressure") is None
     # event timing as in force_model's selftest: link crosses 500 at tick 3, alarm from tick 1 = a 2-tick warning
     raw = pd.DataFrame({"scenario_id": "e", "link_id": "b", TICK: range(6), TARGET: [0.0, 100, 200, 600, 700, 0]})
     oof = raw[["scenario_id", "link_id", TICK]].assign(true=[200.0, 600, 700, 700, 0, 0], **{NOW: raw[TARGET]},
@@ -122,22 +146,28 @@ def main():
     p.add_argument("folders", type=Path, nargs="+", help="sweep.py out-dirs, e.g. fm_sweep_1way fm_extra/history")
     p.add_argument("--threshold", type=float, default=1062.0, help="pressure (N) that counts as a crossing (default 1062)")
     p.add_argument("--out", type=Path, default=Path("fm_errorbars/results.csv"))
+    p.add_argument("--all-runs-only", action="store_true", help="only the folders trained on all runs (faster)")
     args = p.parse_args()
+    args.folders = [results.find(f) for f in args.folders]  # short names are looked up in the results folder
+    args.out = results.new_dir(args.out.parent) / args.out.name  # fm_errorbars/results.csv -> <results folder>/<date>_fm_errorbars/
     raw = load_data(args.data)
     ev = first_crossings(raw.assign(link_id=raw.link_id.astype(str)), TARGET, args.threshold)
     rows = []
     for top in args.folders:
-        cells = sorted(top.glob("h*_runsall/predictions.csv"), key=lambda f: int(re.match(r"h(\d+)_", f.parent.name)[1]))
+        trained_on = crush_runs(top)
+        cells = [f for f in top.glob("h*_runs*/predictions.csv") if cell_id(f.parent.name)]
+        if args.all_runs_only or not trained_on:  # without results.csv the smaller sizes have no place on the x-axis
+            cells = [f for f in cells if cell_id(f.parent.name)[1] == "all"]
         if not cells:
-            sys.exit(f"{top}: no h<window>_runsall/predictions.csv inside")
-        for f in cells:
-            horizon = int(re.match(r"h(\d+)_", f.parent.name)[1])
+            sys.exit(f"{top}: no h<window>_runs<N>/predictions.csv inside")
+        # by window, then training size with "all" last
+        for f in sorted(cells, key=lambda f: (cell_id(f.parent.name)[0], float(cell_id(f.parent.name)[1].replace("all", "inf")))):
+            horizon, size = cell_id(f.parent.name)
             print(f"{f.parent} ...", flush=True)
             oof = pd.read_csv(f, dtype={"scenario_id": str, "link_id": str})
             for row in cell(oof, ev, horizon, args.threshold):
                 check(row, f.parent)
-                # crush_runs is only there so sweep_plot.py can pick "the largest size"; there is one size here
-                rows.append({"window_s": horizon, "train_runs": "all", "crush_runs": 0.0, **row})
+                rows.append({"window_s": horizon, "train_runs": size, "crush_runs": trained_on.get((horizon, size), 0.0), **row})
     res = pd.DataFrame(rows)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     res.to_csv(args.out, index=False)
@@ -145,7 +175,7 @@ def main():
                       real_pct=res.alarms_real_share * 100, r_lo=res.alarms_real_share_lo * 100,
                       r_hi=res.alarms_real_share_hi * 100)
     print(f"\n== 95% ranges ({REPS} re-draws of the runs) ==")
-    print(show[["model", "window_s", "events", "event_runs", "w_lo", "warning", "w_hi", "r_lo", "real_pct", "r_hi"]]
+    print(show[["model", "window_s", "train_runs", "events", "event_runs", "w_lo", "warning", "w_hi", "r_lo", "real_pct", "r_hi"]]
           .round(1).to_string(index=False))
     print(f"\nwrote {args.out}")
 

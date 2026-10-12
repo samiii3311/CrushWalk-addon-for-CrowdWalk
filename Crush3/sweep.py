@@ -17,7 +17,7 @@ after every run, so a stopped sweep still leaves them. Each run's own files are 
 Runs in the background by default and shows its log (<out-dir>/run.log) live: Ctrl-C only stops
 showing the log, `--stop` ends the job, `--foreground` runs it in the terminal (see background.py).
 A plain --out-dir name becomes a dated folder in the results folder, e.g. fm_sweep ->
-/mnt/ssd_1tb/crush/results/2026-10-12_fm_sweep (see results.py); ./fm_sweep stays where you are.
+/mnt/ssd_1tb/crush/results/2026-10-12_fm_sweep (see results.py); out/fm_sweep or /tmp/fm_sweep is used as given.
 
 Usage (on the Linux machine):
     python3 sweep.py crush.duckdb --out-dir fm_sweep

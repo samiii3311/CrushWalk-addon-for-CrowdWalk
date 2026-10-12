@@ -35,7 +35,7 @@ so a random split would leak the answer):
 Runs in the background by default and shows its log (<out-dir>/run.log) live: Ctrl-C only stops
 showing the log, `--stop` ends the job, `--foreground` runs it in the terminal (see background.py).
 A plain --out-dir name becomes a dated folder in the results folder, e.g. fm_h120 ->
-/mnt/ssd_1tb/crush/results/2026-10-12_fm_h120 (see results.py); ./fm_h120 stays where you are.
+/mnt/ssd_1tb/crush/results/2026-10-12_fm_h120 (see results.py); out/fm_h120 or /tmp/fm_h120 is used as given.
 
 Usage (on the Linux machine):
     python3 force_model.py crush.duckdb --horizon 10 --cv 5 --out-dir force_model_cv

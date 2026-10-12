@@ -6,7 +6,7 @@ Where results go: one folder per run under ROOT, with the date in front of the n
 folders sort in the order they were made and stay out of the source tree.
 
     --out-dir fm_h120      ->  <ROOT>/2026-10-12_fm_h120       (a plain name: dated, under ROOT)
-    --out-dir ./fm_h120    ->  ./fm_h120                       (anything with a folder in it: used as given)
+    --out-dir out/fm_h120  ->  out/fm_h120                     (anything with a folder in it: used as given)
     --out-dir /tmp/x       ->  /tmp/x
     --out-dir 2026-10-10_fm_sweep  ->  <ROOT>/2026-10-10_fm_sweep   (already dated: that exact folder)
 
@@ -34,7 +34,7 @@ DATED = re.compile(r"\d{4}-\d{2}-\d{2}_")
 
 
 def plain(path):
-    """A single name with no folder in it: fm_h120, but not ./fm_h120, a/b or /tmp/x."""
+    """A single name with no folder in it: fm_h120 (and ./fm_h120, which Path reads as the same), but not a/b or /tmp/x."""
     return not path.is_absolute() and len(path.parts) == 1 and path.parts[0] not in (".", "..")
 
 
@@ -47,7 +47,7 @@ def new_dir(name):
         ROOT.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         sys.exit(f"cannot use the results folder {ROOT} ({e}).\n"
-                 f"Change ROOT in {Path(__file__).name}, set CRUSH_RESULTS, or give a path such as --out-dir ./{path}")
+                 f"Change ROOT in {Path(__file__).name}, set CRUSH_RESULTS, or give a path such as --out-dir out/{path}")
     if DATED.match(path.name):
         return ROOT / path.name
     # the background copy of a job inherits the date its starter used, also across midnight
@@ -77,7 +77,8 @@ def selftest():
     os.environ["CRUSH_RUN_DATE"] = "2026-10-12"
     assert new_dir("fm_x") == ROOT / "2026-10-12_fm_x" and ROOT.is_dir()
     assert new_dir("2026-10-10_fm_x") == ROOT / "2026-10-10_fm_x"  # already dated: no second date
-    for given in ("./fm_x", "a/fm_x", "/tmp/fm_x", "."):
+    assert new_dir("./fm_x") == ROOT / "2026-10-12_fm_x"  # Path drops the ./, so it is a plain name
+    for given in ("a/fm_x", "/tmp/fm_x", "."):
         assert new_dir(given) == Path(given)  # anything with a folder in it is used as given
     for day in ("2026-10-10", "2026-10-12"):
         (ROOT / f"{day}_fm_x").mkdir()

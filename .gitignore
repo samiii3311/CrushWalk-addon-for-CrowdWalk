@@ -36,3 +36,5 @@ src/**
 test/**
 tools/**
 Kurume/**
+CrushArchive/2025/**
+__pycache__/

@@ -3,7 +3,7 @@
 error_bars.py
 
 How much could the sweep's numbers move by chance? No model is trained: this reads the
-predictions.csv that sweep.py / extra_models.py already saved for each window (the folders
+predictions.csv that sweep.py already saved for each window (the folders
 trained on all runs, h<window>_runsall/) and gives a 95% range for
 
   median_warning_s     typical warning before an event

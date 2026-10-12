@@ -17,26 +17,28 @@ CrowdWalk agents normally block each other on a lane. CrushWalk adds two boolean
 
 ```
 crowdwalk/
-├── Crush2/              Intermediate Ruby agent prototype and scenarios
-├── Crush3/              Blackboard-architecture prototype and physics tests,
-│                        plus the crush-prediction pipeline (make_maps.py,
-│                        run_batch.py, link_context.py, force_model.py;
+├── Crush3/              The current work: the CrushWalk agent scripts and the
+│                        crush-prediction pipeline (make_maps.py, run_batch.py,
+│                        link_context.py, force_model.py, sweep.py;
 │                        guide in Crush3/README.md)
-├── CrushTest/           Integration test setup and plotting utilities
-├── CrushTesting/        Runnable benchmark scenarios: 8 map topologies
-│                        (1OneWay.xml … 8RandomMovement.xml, covering one-way
-│                        corridors, turns, funnels, crossroads, and random
-│                        motion) plus the Ruby agent scripts, gen/prop/scenario
-│                        JSON, and a code.py utility needed to actually run them
-├── Test/                Real-world map (Higashiv2.xml) and its gen/prop/
-│                        scenario configs
 ├── patchCrowd.py        Patcher: string-anchored search/replace, generates
 │                        DynamicAgentLogger.java and LinkAggregateLogger.java,
 │                        builds with Gradle
-├── run.py               Batch parameter-sweep runner and plotter (hardcodes
-│                        a Linux path and output directory; edit both before
-│                        running on this machine)
-└── gpxToCsv.py          Converts a GPX trace to CrowdWalk-compatible CSV
+├── gpxToCsv.py          Converts a GPX trace to CrowdWalk-compatible CSV
+└── CrushArchive/        Earlier work, kept for reference. Nothing in Crush3
+    │                    needs it.
+    ├── Crush2/          Intermediate Ruby agent prototype and scenarios
+    ├── CrushTest/       Integration test setup and plotting utilities
+    ├── CrushTesting/    Benchmark scenarios: 8 map topologies
+    │                    (1OneWay.xml … 8RandomMovement.xml) plus the Ruby
+    │                    agent scripts and gen/prop/scenario JSON to run them
+    ├── MLpractice/      First practice classifiers (September 2026)
+    ├── Crush3_old/      bldataset.py (earlier classification dataset) and
+    │                    review.py (large-CSV inspector)
+    ├── run.py           Agent-radius sweep runner and plotter (hardcodes a
+    │                    Linux path and output directory)
+    └── 2025/            2025 projects (HigashiKU, Kurume, practice maps,
+                         Result_calc). Local only, not in git
 ```
 
 ## Setup
@@ -84,13 +86,13 @@ CrowdWalk picks up the new column in `dynamic_metrics.csv` automatically on the 
 A single scenario, through CrowdWalk's own launcher:
 
 ```
-sh quickstart.sh ./CrushTesting/prop.json -g2
+sh quickstart.sh ./CrushArchive/CrushTesting/prop.json -g2
 ```
 
-A parameter sweep across multiple runs (edit the hardcoded paths in `run.py` first):
+The old agent-radius sweep (edit the hardcoded paths in `CrushArchive/run.py` first):
 
 ```
-python run.py
+python CrushArchive/run.py
 ```
 
 A GPX trace converted to model coordinates:

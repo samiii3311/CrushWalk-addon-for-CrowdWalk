@@ -3,8 +3,8 @@
 sweep.py
 
 Which window length should the model predict over, and is there enough data for it?
-Runs force_model.py's pressure model at every window length x every training size and
-draws one graph per model (Random Forest, XGBoost): one line per window, crush runs used
+Runs force_model.py's pressure models at every window length x every training size and
+draws one graph per model: one line per window, crush runs used
 for training along the bottom, share of crush events warned in time up the side.
 
   a line that has gone flat    more data has stopped helping: that height is the window's score
@@ -14,9 +14,13 @@ for training along the bottom, share of crush events warned in time up the side.
 <out-dir>/results.csv (the table) and <out-dir>/sweep_<model>.png (the graphs) are rewritten
 after every run, so a stopped sweep still leaves them. Each run's own files are in <out-dir>/h<window>_runs<N>/.
 
+Runs in the background by default and shows its log (<out-dir>/run.log) live: Ctrl-C only stops
+showing the log, `--stop` ends the job, `--foreground` runs it in the terminal (see background.py).
+
 Usage (on the Linux machine):
     python3 sweep.py crush.duckdb --out-dir fm_sweep
     python3 sweep.py crush.duckdb --windows 60,120 --runs 16,32,0 --out-dir fm_sweep2
+    python3 sweep.py crush.duckdb --models all --runs 0 --out-dir fm_models   # every model, all runs only
     python3 sweep.py --replot fm_sweep/results.csv      # redraw the graphs without rerunning
     python3 sweep.py --selftest
 """
@@ -29,7 +33,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from force_model import TARGET, TICK, load_data, run
+import background
+from force_model import MODEL_SETS, TARGET, TICK, load_data, prepare, run
 
 FLAT_GAIN = 0.05  # a window counts as "flat" when its last step in training size gained less than this share of events
 # what the graph can show (a results.csv column -> axis label); --metric picks one
@@ -89,13 +94,14 @@ def plot_model(plt, res, model, path, note, metric="warned_share"):
     print(f"graph: {path}")
 
 
-def sweep(df, windows, sizes, out_dir, cv=5, threshold=1062.0):
+def sweep(df, windows, sizes, out_dir, cv=5, threshold=1062.0, models=MODEL_SETS["main"]):
     """Every window length x every training size (0 = all runs)."""
+    df = prepare(df, models)  # history and Holt columns once, not once per run
     rows = []
     for h in windows:
         for n in sizes:
             s, _ = run(df, h, 0.2, out_dir / f"h{h}_runs{n or 'all'}", cv=cv, window_max=True,
-                       train_runs=n or None, threshold=threshold, importance=False)
+                       train_runs=n or None, threshold=threshold, importance=False, models=models)
             for model, r in s.attrs["crossings"].items():
                 rows.append({"window_s": h, "train_runs": n or "all", "crush_runs": s.attrs["crush_runs"],
                              "model": model, **r})
@@ -117,8 +123,9 @@ def selftest():
     df = pd.concat([one_run(f"r{i}") for i in range(6)], ignore_index=True)
     out = Path(tempfile.mkdtemp())
     res = sweep(df, [5, 10], [2, 0], out, cv=3, threshold=500)
-    assert len(res) == 8 and res.warned_share.between(0, 1).all()  # 2 windows x 2 sizes x 2 models
-    assert len(pd.read_csv(out / "results.csv")) == 8
+    assert len(res) == 12 and res.warned_share.between(0, 1).all()  # 2 windows x 2 sizes x (2 models + Holt)
+    assert set(res.model) == {"RF_history", "XGB_history", "Holt"}
+    assert len(pd.read_csv(out / "results.csv")) == 12
     all_runs = res[res.train_runs == "all"]
     assert (all_runs.crush_runs >= res[res.train_runs == 2].crush_runs.max()).all()  # more runs, more crush runs
     print("\nselftest ok")
@@ -134,17 +141,22 @@ def main():
     p.add_argument("--cv", type=int, default=5, metavar="K", help="K-fold cross-validation grouped by run (default 5)")
     p.add_argument("--threshold", type=float, default=1062.0, help="pressure (N) that counts as a crossing (default 1062)")
     p.add_argument("--out-dir", type=Path, default=Path("fm_sweep"))
+    p.add_argument("--models", choices=MODEL_SETS, default="main",
+                   help="main = RF and XGBoost with history (default); other = the comparison models; all = both")
     p.add_argument("--metric", choices=METRICS, default="warned_share",
                    help="what --replot draws: events warned (default), records caught, or alarms that were real")
     p.add_argument("--replot", type=Path, default=None, metavar="RESULTS_CSV",
                    help="only redraw the graphs next to an existing results.csv")
+    background.stop_requested()
+    background.add_args(p)
     args = p.parse_args()
     if args.replot:
         return plot_sweep(pd.read_csv(args.replot), args.replot.parent, metric=args.metric)
     if not args.data:
         p.error("give the database, or --replot results.csv")
+    background.start(args, args.out_dir / "run.log")
     sweep(load_data(args.data), [int(x) for x in args.windows.split(",")], [int(x) for x in args.runs.split(",")],
-          args.out_dir, args.cv, args.threshold)
+          args.out_dir, args.cv, args.threshold, MODEL_SETS[args.models])
 
 
 if __name__ == "__main__":

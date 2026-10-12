@@ -2,7 +2,13 @@
 """
 force_model.py
 
-First simple regression check: predict the highest value, over the next `--horizon` ticks, of a link's
+The model trainer. It trains and scores; what it trains lives in three other files:
+  models_main.py    the main models: Random Forest and XGBoost with history (--models main, the default)
+  models_other.py   comparison models: the same two without history, Ridge, a formula (--models other)
+  baselines.py      what they are compared with: train mean, no change, Holt (always computed)
+--models all trains the main and the other models in one run, on the same folds.
+
+Predicts the highest value, over the next `--horizon` ticks, of a link's
   pressure  max_compression_pressure (N)
   held      max_time_over_threshold (s): longest anyone on the link has stayed over
             crushThreshold in a row; crushed at crushDuration (240 s)
@@ -11,7 +17,7 @@ from its current state plus previous/next-link context (output of link_context.p
 Each target gets its own model and its own <out-dir>/<target>/ folder. Whether the
 predicted pressure + held time mean "crush" is a separate thresholding step, later.
 
-Reports, for RandomForest and XGBoost against two baselines:
+Reports, for the chosen models against the baselines:
   - MAE and RMSE (N) on held-out data (per fold, and mean +/- std over folds)
   - permutation importance -> which variables matter / can be dropped
   - error by true-force band -> where the model breaks down (the limits)
@@ -26,12 +32,16 @@ so a random split would leak the answer):
   --holdout-map MAP    train on the other maps, test on MAP (map_file column)
   --holdout-map all    leave-one-map-out: one fold per map
 
+Runs in the background by default and shows its log (<out-dir>/run.log) live: Ctrl-C only stops
+showing the log, `--stop` ends the job, `--foreground` runs it in the terminal (see background.py).
+
 Usage (on the Linux machine):
     python3 force_model.py crush.duckdb --horizon 10 --cv 5 --out-dir force_model_cv
     python3 force_model.py crush.duckdb --cv 5 --target held        # only the held-time model
     python3 force_model.py crush.duckdb --horizon 10 --holdout-map all --out-dir force_model_maps
     python3 force_model.py crush.duckdb --horizon 10 --cv 5 --observable-only --out-dir force_model_obs
     python3 force_model.py crush.duckdb --horizon 10 --cv 5 --at-horizon --out-dir force_model_at10   # old target
+    python3 force_model.py crush.duckdb --horizon 120 --cv 5 --target pressure --models all --no-importance
     python3 force_model.py --selftest
 """
 
@@ -42,11 +52,14 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import GroupKFold
-from xgboost import XGBRegressor
+
+import background
+import baselines
+import models_main
+import models_other
 
 TICK = "current_traveling_period"
 TARGET = "max_compression_pressure"
@@ -55,6 +68,9 @@ NOT_FEATURES = {"scenario_id", "link_id", TICK, "target", "crush_now", "fold"}  
 # Simulated forces no camera/sensor could measure in real life. --observable-only drops every
 # column whose name contains one of these (current force, push/social force, neighbour forces).
 SIM_ONLY = ("force", "pressure", "compression", "time_over_threshold")
+# --models name -> function(columns) giving {model name: (untrained model, does it get the history columns)}
+MODEL_SETS = {"main": models_main.new_models, "other": models_other.new_models,
+              "all": lambda columns=None: {**models_main.new_models(columns), **models_other.new_models(columns)}}
 
 
 def add_target(df, horizon, target=TARGET, window_max=False):
@@ -120,20 +136,26 @@ def scores(y, pred):
     return {"MAE": mean_absolute_error(y, pred), "RMSE": mean_squared_error(y, pred) ** 0.5}
 
 
-def new_models():
-    return {
-        "RandomForest": RandomForestRegressor(n_estimators=300, min_samples_leaf=5, n_jobs=-1, random_state=0),
-        "XGBoost": XGBRegressor(n_estimators=400, max_depth=6, learning_rate=0.05, subsample=0.8, random_state=0),
-    }
+def prepare(df, models, holt=True):
+    """Adds the history columns (if a model wants them) and the Holt baseline's columns, unless they are
+    already there: sweep.py calls this once for all its runs, since both take a while on the full table."""
+    if any(history for _, history in models(df.columns).values()) and not models_main.LAG_FEATURES & set(df.columns):
+        df = models_main.add_lags(df)
+    if holt and f"{baselines.HOLT_PREFIX}l0" not in df:
+        df = baselines.add_holt(df)
+    return df
 
 
 def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout_map=None, target=TARGET, unit="N",
-        window_max=False, top_features=None, train_runs=None, threshold=None, importance=True):
+        window_max=False, top_features=None, train_runs=None, threshold=None, importance=True, models=None):
+    models = models or MODEL_SETS["main"]
+    df = prepare(df, models, holt=target == TARGET)
     print(f"\n######## target: {target} ({unit}), "
           f"{'highest in the next ' + str(horizon) + ' ticks' if window_max else str(horizon) + ' ticks ahead'} ########")
     raw = df  # every tick, including the end of each run that add_target drops (crossing times come from here)
     df = add_target(df, horizon, target, window_max)
-    features = [c for c in df.columns if c not in NOT_FEATURES and pd.api.types.is_numeric_dtype(df[c])]
+    features = [c for c in df.columns if c not in NOT_FEATURES and not c.startswith(baselines.HOLT_PREFIX)
+                and pd.api.types.is_numeric_dtype(df[c])]
     if observable_only:
         dropped = [c for c in features if any(k in c for k in SIM_ONLY)]
         features = [c for c in features if c not in dropped]
@@ -143,8 +165,11 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
         # optimistic; rank inside each fold if a top-K result ever becomes a headline number
         features = [f for f in top_features if f in features]
         print(f"top features only: kept {len(features)}: {', '.join(features)}")
+    plain = [f for f in features if f not in models_main.LAG_FEATURES]  # for the models without history
+    names = list(models(df.columns))
     folds = make_folds(df, test_frac, cv, holdout_map)
-    print(f"rows: {len(df):,}; features: {len(features)}; folds: {len(folds)}")
+    print(f"rows: {len(df):,}; features: {len(plain)} (+{len(features) - len(plain)} history); folds: {len(folds)}; "
+          f"models: {', '.join(names)}")
 
     fold_scores, oof, importances, crush_runs = [], [], [], []
     for i, (name, test) in enumerate(folds):
@@ -158,21 +183,20 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
             crush_runs.append(train.loc[train[target] >= threshold, "scenario_id"].nunique())
         print(f"-- {name}: train {len(train):,} rows, test {len(te):,} rows; "
               f"test target mean {te.target.mean():.1f} {unit}, max {te.target.max():.1f} {unit}")
-        preds = {
-            "baseline: train mean": np.full(len(te), train.target.mean()),
-            "baseline: now": te[target].to_numpy(),  # "nothing changes" -- the model must beat this
-        }
-        models = new_models()
-        for m_name, m in models.items():
-            m.fit(train[features], train.target)
-            preds[m_name] = m.predict(te[features])
+        preds = baselines.predictions(train, te, target, horizon)  # "no change" is the one the models must beat
+        fitted = models(df.columns)
+        for m_name, (m, history) in fitted.items():
+            cols = features if history else plain
+            m.fit(train[cols], train.target)
+            preds[m_name] = m.predict(te[cols])
         for k, p in preds.items():
             fold_scores.append({"fold": name, "model": k, **scores(te.target, p)})
         if importance:
-            best = min(models, key=lambda k: mean_absolute_error(te.target, preds[k]))
-            imp = permutation_importance(models[best], te[features], te.target, scoring="neg_mean_absolute_error",
+            best = min(fitted, key=lambda k: mean_absolute_error(te.target, preds[k]))
+            cols = features if fitted[best][1] else plain
+            imp = permutation_importance(fitted[best][0], te[cols], te.target, scoring="neg_mean_absolute_error",
                                          n_repeats=3, random_state=0, n_jobs=1)  # worker processes each get a copy of the forest; even 4 filled /dev/shm
-            importances.append(pd.Series(imp.importances_mean, index=features, name=name))
+            importances.append(pd.Series(imp.importances_mean, index=cols, name=name))
         keep = [c for c in ["scenario_id", "map_file", "link_id", TICK] if c in te]
         oof.append(te[keep].assign(fold=name, true=te.target.to_numpy(),
                                    **{f"pred_{k}": v for k, v in preds.items()}))
@@ -194,7 +218,7 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
 
     # Limits: error by true-force band, pooled over every fold's held-out rows.
     oof = pd.concat(oof, ignore_index=True)
-    best = summary[("MAE", "mean")].loc[list(new_models())].idxmin()
+    best = summary[("MAE", "mean")].loc[names].idxmin()
     y = oof.true
     bands = pd.cut(y, [-np.inf, 0, y.quantile(0.5), y.quantile(0.9), y.quantile(0.99), np.inf], duplicates="drop")
     err = pd.DataFrame({"band": bands, "abs_err": (oof[f"pred_{best}"] - y).abs(), "bias": oof[f"pred_{best}"] - y})
@@ -207,9 +231,10 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
     if threshold is not None:
         # Crossings: below the threshold now, at or above it in the target. The no-change baseline
         # can never predict one, so anything caught here is something the model learned.
-        calm = oof["pred_baseline: now"] < threshold
+        calm = oof[f"pred_{baselines.NOW}"] < threshold
         onset = calm & (y >= threshold)
-        calls = {m: calm & (oof[f"pred_{m}"] >= threshold) for m in new_models()}
+        alarming = names + [m for m in [baselines.HOLT] if f"pred_{m}" in oof]  # Holt can raise alarms too
+        calls = {m: calm & (oof[f"pred_{m}"] >= threshold) for m in alarming}
         cross = pd.DataFrame({"crossings": onset.sum(), "caught": {m: (c & onset).sum() for m, c in calls.items()},
                               "alarms": {m: c.sum() for m, c in calls.items()}})
         cross["caught_share"] = cross.caught / cross.crossings
@@ -275,14 +300,16 @@ def selftest():
     df = pd.concat([one_run(f"r{i}", "m1.xml" if i < 4 else "m2.xml") for i in range(6)], ignore_index=True)
     tmp = Path(tempfile.mkdtemp())
     mae = lambda s, m: s.loc[m, ("MAE", "mean")]
+    # most checks use the two models without history, so the feature lists below stay short
+    plain = lambda columns=None: {k: v for k, v in models_other.new_models(columns).items() if k in ("RandomForest", "XGBoost")}
 
-    s, _ = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "default")
+    s, _ = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "default", models=plain)
     for m in ("RandomForest", "XGBoost"):
         assert mae(s, m) < mae(s, "baseline: now") and mae(s, m) < mae(s, "baseline: train mean"), m
 
     # --cv 3: every run tested exactly once, never in train and test of the same fold -- but a MAP
     # can be in both (other runs on it), which is the "known layout, new crowd" test
-    s, oof = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "cv", cv=3)
+    s, oof = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "cv", models=plain, cv=3)
     assert oof.groupby("scenario_id").fold.nunique().eq(1).all() and oof.scenario_id.nunique() == 6
     assert oof.fold.nunique() == 3 and mae(s, "RandomForest") < mae(s, "baseline: now")
     d = add_target(df, 5)
@@ -295,21 +322,21 @@ def selftest():
     assert len(folds) == 1 and "(4 runs)" in folds[0][0]
 
     # --holdout-map: test rows come only from the held-out map
-    _, oof = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "map", holdout_map="m2.xml")
+    _, oof = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "map", models=plain, holdout_map="m2.xml")
     assert set(oof.map_file) == {"m2.xml"} and oof.scenario_id.nunique() == 2
-    _, oof = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "maps", holdout_map="all")
+    _, oof = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "maps", models=plain, holdout_map="all")
     assert oof.groupby("map_file").fold.nunique().eq(1).all() and oof.fold.nunique() == 2
 
     # observable-only: force columns out of the features
     run(df.assign(max_push_force=1.0, prev_max_compression_pressure=2.0), horizon=5, test_frac=0.2,
-        out_dir=tmp / "obs", cv=3, observable_only=True)
+        out_dir=tmp / "obs", models=plain, cv=3, observable_only=True)
     assert set(pd.read_csv(tmp / "obs" / "importance.csv").feature) == {"prev_inflow", "agent_count"}
     assert add_target(df, 5).set_index([TICK, "scenario_id"]).target[(0, "r0")] == df[TARGET][5]
 
     # held-time target: its own column is the target, and observable-only hides it from the features
     held = df.assign(max_time_over_threshold=(df[TARGET] > 500).groupby(df.scenario_id).cumsum().astype(float))
     assert add_target(held, 5, "max_time_over_threshold").target[0] == held.max_time_over_threshold[5]
-    run(held, horizon=5, test_frac=0.2, out_dir=tmp / "held", cv=3, observable_only=True,
+    run(held, horizon=5, test_frac=0.2, out_dir=tmp / "held", models=plain, cv=3, observable_only=True,
         target="max_time_over_threshold", unit="s")
     assert "max_time_over_threshold" not in set(pd.read_csv(tmp / "held" / "importance.csv").feature)
 
@@ -317,11 +344,11 @@ def selftest():
     assert add_target(df, 5, window_max=True).target[0] == df[TARGET][1:6].max()
     gap = pd.DataFrame({"scenario_id": "g", "link_id": "b", TICK: [0, 1, 2, 8, 20], TARGET: [5.0, 9.0, 1.0, 3.0, 0.0]})
     assert list(add_target(gap, 3, window_max=True).target) == [9.0, 1.0, 0.0, 0.0]  # tick 8 sees only empty ticks
-    s, _ = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "wmax", cv=3, window_max=True)
+    s, _ = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "wmax", models=plain, cv=3, window_max=True)
     assert mae(s, "RandomForest") < mae(s, "baseline: now")
 
     # the three experiment switches: top features only, fewer training runs, crossings table, no importance
-    run(df, horizon=5, test_frac=0.2, out_dir=tmp / "exp", cv=3, top_features=["prev_inflow", "not_a_column"],
+    run(df, horizon=5, test_frac=0.2, out_dir=tmp / "exp", models=plain, cv=3, top_features=["prev_inflow", "not_a_column"],
         train_runs=2, threshold=500, importance=False)
     cross = pd.read_csv(tmp / "exp" / "crossings.csv", index_col=0)
     assert (cross.caught <= cross.crossings).all() and cross.crossings.iloc[0] > 0
@@ -332,6 +359,21 @@ def selftest():
     ev = pd.DataFrame({"scenario_id": "e", "link_id": "b", TICK: range(6), TARGET: [0.0, 100, 200, 600, 700, 0]})
     assert first_crossings(ev, TARGET, 500).iloc[0] == 3
     assert first_crossings(ev.assign(**{TARGET: 900.0}), TARGET, 500).empty  # never below it: no warning possible
+
+    # the default (main) models get the history columns, Holt is scored next to them, and the
+    # models without history never see a history column
+    full = df.assign(density=df.prev_inflow / 2, std_speed=1.0)
+    s, oof = run(full, horizon=5, test_frac=0.2, out_dir=tmp / "main", cv=3, window_max=True, threshold=500)
+    assert {"pred_RF_history", "pred_XGB_history", "pred_Holt", "pred_baseline: now"} <= set(oof.columns)
+    assert mae(s, "RF_history") < mae(s, "baseline: now")
+    assert set(pd.read_csv(tmp / "main" / "crossings.csv", index_col=0).index) == {"RF_history", "XGB_history", "Holt"}
+    assert any(f in models_main.LAG_FEATURES for f in pd.read_csv(tmp / "main" / "importance.csv").feature)
+    assert not any(f.startswith("holt_") for f in pd.read_csv(tmp / "main" / "importance.csv").feature)
+    run(prepare(full, MODEL_SETS["main"]), horizon=5, test_frac=0.2, out_dir=tmp / "plainimp", cv=3, models=plain)
+    assert not any(f in models_main.LAG_FEATURES for f in pd.read_csv(tmp / "plainimp" / "importance.csv").feature)
+    s, _ = run(full, horizon=5, test_frac=0.2, out_dir=tmp / "all", cv=3, window_max=True, threshold=500,
+               importance=False, models=MODEL_SETS["all"])
+    assert {"RF_history", "XGB_history", "RandomForest", "XGBoost", "Ridge", "Ridge_history", "Formula", "Holt"} <= set(s.index)
     print("\nselftest ok")
 
 
@@ -363,13 +405,20 @@ def main():
     p.add_argument("--threshold", type=float, default=1062.0,
                    help="pressure (N) that counts as a crossing in crossings.csv (default 1062 = crushThreshold - margin)")
     p.add_argument("--no-importance", action="store_true", help="skip permutation importance (the slow part)")
+    p.add_argument("--models", choices=MODEL_SETS, default="main",
+                   help="main = RF and XGBoost with history (models_main.py, default); other = the comparison "
+                        "models (models_other.py); all = both")
+    background.stop_requested()
+    background.add_args(p)
     args = p.parse_args()
+    background.start(args, args.out_dir / "run.log")
     top = None
     if args.top_features:
         if not args.features_from:
             p.error("--top-features needs --features-from <importance.csv>")
         top = list(pd.read_csv(args.features_from).feature[:args.top_features])
-    df = load_data(args.data)
+    models = MODEL_SETS[args.models]
+    df = prepare(load_data(args.data), models, holt="pressure" in args.target)  # once, not once per target
     for name in args.target:
         col, unit = TARGETS[name]
         if col not in df:
@@ -378,7 +427,7 @@ def main():
         run(df, args.horizon, args.test_frac, args.out_dir / name, args.observable_only, args.cv,
             args.holdout_map, col, unit, window_max=not args.at_horizon, top_features=top,
             train_runs=args.train_runs, threshold=args.threshold if name == "pressure" else None,
-            importance=not args.no_importance)
+            importance=not args.no_importance, models=models)
 
 
 if __name__ == "__main__":

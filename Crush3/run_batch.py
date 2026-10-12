@@ -11,7 +11,9 @@ Unattended data collection. For each seed (start-seed, start-seed+1, ...):
      link_context.py (link context + map details per record) and the CSV is deleted
   4. on to the next seed -> new maps, new crowds, new randseed
 
-Safe to stop (Ctrl-C) and restart with the same arguments: runs already in the DB
+Runs in the background by default and shows its log (<out>/run_batch.log) live: Ctrl-C only
+stops showing the log, `--stop` ends the batch, `--foreground` runs it in the terminal (see
+background.py). Safe to stop and restart with the same arguments: runs already in the DB
 are skipped, an interrupted run is simply redone. A run that fails or exceeds
 --timeout is logged and skipped; the batch keeps going. runner_log.csv (in --out)
 has one row per attempted run: run id, status, seconds, rows loaded, message.
@@ -24,7 +26,8 @@ Usage (on the Linux machine, from crowdwalk/):
     python3 Crush3/run_batch.py --batches 5 --n 4 --runs-per-map 3 \\
         --out /mnt/ssd_2tb/gen_maps --log-root /mnt/ssd_2tb/gen_logs --db /mnt/ssd_2tb/crush.duckdb
     python3 Crush3/run_batch.py --runs 200 ...       # stop once 200 runs are in the DB (new seeds as needed)
-    python3 Crush3/run_batch.py --batches 0 ...      # 0 = keep going until Ctrl-C
+    python3 Crush3/run_batch.py --batches 0 ...      # 0 = keep going until stopped
+    python3 Crush3/run_batch.py --stop --log ~/crush_test/maps/run_batch.log   # end a running batch
     python3 Crush3/run_batch.py --selftest           # uses a fake simulator, runs anywhere
 """
 
@@ -45,6 +48,7 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import background  # noqa: E402
 from link_context import TABLE, build_run, read_json_c, write_db  # noqa: E402
 from make_maps import FAMILIES as ALL_FAMILIES, generate  # noqa: E402
 
@@ -83,21 +87,33 @@ def quickstart_cmd(crowdwalk_dir):
     return lambda prop: ["sh", str(crowdwalk_dir / "quickstart.sh"), str(prop), "-c", "-lError"]
 
 
+LIVE, STOPPING = set(), threading.Event()  # simulations in progress; set once the batch is being stopped
+
+
 def simulate(cmd, prop, cwd, timeout):
     """Run one simulation; returns (ok, message). Output goes to sim.log next to prop.json.
     Runs in its own process group so a timeout kills the JVM too, not just the sh wrapper."""
     env = {**os.environ, "LANG": os.environ.get("LANG", "ja_JP.UTF-8"),
            "JAVA_OPTS": os.environ.get("JAVA_OPTS", "-Dgroovy.source.encoding=UTF-8 -Dfile.encoding=UTF-8")}
+    if STOPPING.is_set():
+        return False, "stopped"
     with open(prop.parent / "sim.log", "w") as log:
         p = subprocess.Popen(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, env=env,
                              start_new_session=(os.name == "posix"))
+        LIVE.add(p)
         try:
             code = p.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            os.killpg(p.pid, signal.SIGKILL) if os.name == "posix" else p.kill()
+            kill(p)
             p.wait()
             return False, f"timeout after {timeout}s"
+        finally:
+            LIVE.discard(p)
     return code == 0, f"exit code {code}"
+
+
+def kill(p):
+    os.killpg(p.pid, signal.SIGKILL) if os.name == "posix" else p.kill()
 
 
 def last_tick(link_csv):
@@ -205,22 +221,29 @@ def run_batches(args, sim_cmd):
             with ThreadPoolExecutor(max_workers=args.jobs) as pool:
                 futures = {pool.submit(timed_sim, out / tag / r["run"] / "prop.json", f"{tag}/{r['run']}"):
                            (f"{tag}/{r['run']}", out / tag / r["run"] / "prop.json") for r in todo}
-                for i, fut in enumerate(as_completed(futures), 1):  # DB writes stay in this thread (single writer)
-                    run_id, prop = futures[fut]
-                    ok, msg, secs = fut.result()
-                    n_rows = 0
-                    if ok:
-                        n_rows, msg = load_run(prop, run_id, args.db, args.drop_agent_log)
-                    status = "loaded" if n_rows else "failed"
-                    if n_rows:
-                        loaded, fail_streak = loaded + 1, 0
-                        done.add(run_id)
-                    else:
-                        fail_streak += 1
-                    log.writerow([run_id, status, round(secs, 1), n_rows, msg])
-                    log_f.flush()
-                    print(f"  [{i}/{len(todo)}] {run_id}: {status} ({fmt_secs(secs)}{', ' + msg if msg else ''})",
-                          flush=True)
+                try:
+                    for i, fut in enumerate(as_completed(futures), 1):  # DB writes stay in this thread (single writer)
+                        run_id, prop = futures[fut]
+                        ok, msg, secs = fut.result()
+                        n_rows = 0
+                        if ok:
+                            n_rows, msg = load_run(prop, run_id, args.db, args.drop_agent_log)
+                        status = "loaded" if n_rows else "failed"
+                        if n_rows:
+                            loaded, fail_streak = loaded + 1, 0
+                            done.add(run_id)
+                        else:
+                            fail_streak += 1
+                        log.writerow([run_id, status, round(secs, 1), n_rows, msg])
+                        log_f.flush()
+                        print(f"  [{i}/{len(todo)}] {run_id}: {status} ({fmt_secs(secs)}{', ' + msg if msg else ''})",
+                              flush=True)
+                except KeyboardInterrupt:  # stop now: start no queued run, end the simulations in progress
+                    STOPPING.set()
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    for p in list(LIVE):
+                        kill(p)
+                    raise
             if fail_streak >= args.max_fail_streak:  # broken setup, not one bad map -> don't loop forever
                 print(f"{fail_streak} runs failed in a row -- stopping; check {out}/runner_log.csv and a sim.log")
                 break
@@ -319,7 +342,7 @@ def main():
     p.add_argument("--runs", type=int, default=RUNS,
                    help="stop after this many runs are loaded into the DB (failed runs don't count); "
                         "moves on to new seeds as needed and overrides --batches")
-    p.add_argument("--batches", type=int, default=BATCHES, help="number of seeds to run (0 = until Ctrl-C)")
+    p.add_argument("--batches", type=int, default=BATCHES, help="number of seeds to run (0 = until stopped)")
     p.add_argument("--start-seed", type=int, default=START_SEED)
     p.add_argument("--n", type=int, default=N_MAPS_PER_FAMILY, help="maps per family per seed")
     p.add_argument("--runs-per-map", type=int, default=RUNS_PER_MAP)
@@ -337,12 +360,15 @@ def main():
                    help="seconds between progress lines for running simulations (0 = off)")
     p.add_argument("--max-fail-streak", type=int, default=MAX_FAIL_STREAK,
                    help="stop after this many failed runs in a row -- a broken setup, not a bad map")
+    background.stop_requested()
+    background.add_args(p)
     args = p.parse_args()
     args.crowdwalk = args.crowdwalk.resolve()
     # "~" -> home folder, so the SETTINGS paths can use it
     args.out = str(Path(args.out).expanduser())
     args.db = str(Path(args.db).expanduser())
     args.log_root = str(Path(args.log_root).expanduser()) if args.log_root else None
+    background.start(args, Path(args.out) / "run_batch.log")
     if not Path(args.db).parent.exists():
         sys.exit(f"database folder {Path(args.db).parent} does not exist -- create it or change DB_PATH")
     print(f"runs: {args.runs if args.runs else f'{args.batches} seed(s)'}, {args.n} map(s) x "

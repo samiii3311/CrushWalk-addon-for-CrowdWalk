@@ -142,7 +142,7 @@ def scores(y, pred):
 def prepare(df, models, holt=True):
     """Adds the history columns (if a model wants them) and the Holt baseline's columns, unless they are
     already there: sweep.py calls this once for all its runs, since both take a while on the full table."""
-    if any(history for _, history in models(df.columns).values()) and not models_main.LAG_FEATURES & set(df.columns):
+    if any(history for _, history in models(df.columns).values()) and not any(map(models_main.is_history, df.columns)):
         df = models_main.add_lags(df)
     if holt and f"{baselines.HOLT_PREFIX}l0" not in df:
         df = baselines.add_holt(df)
@@ -168,7 +168,7 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
         # optimistic; rank inside each fold if a top-K result ever becomes a headline number
         features = [f for f in top_features if f in features]
         print(f"top features only: kept {len(features)}: {', '.join(features)}")
-    plain = [f for f in features if f not in models_main.LAG_FEATURES]  # for the models without history
+    plain = [f for f in features if not models_main.is_history(f)]  # for the models without history
     names = list(models(df.columns))
     folds = make_folds(df, test_frac, cv, holdout_map)
     print(f"rows: {len(df):,}; features: {len(plain)} (+{len(features) - len(plain)} history); folds: {len(folds)}; "
@@ -370,10 +370,10 @@ def selftest():
     assert {"pred_RF_history", "pred_XGB_history", "pred_Holt", "pred_baseline: now"} <= set(oof.columns)
     assert mae(s, "RF_history") < mae(s, "baseline: now")
     assert set(pd.read_csv(tmp / "main" / "crossings.csv", index_col=0).index) == {"RF_history", "XGB_history", "Holt"}
-    assert any(f in models_main.LAG_FEATURES for f in pd.read_csv(tmp / "main" / "importance.csv").feature)
+    assert any(map(models_main.is_history, pd.read_csv(tmp / "main" / "importance.csv").feature))
     assert not any(f.startswith("holt_") for f in pd.read_csv(tmp / "main" / "importance.csv").feature)
     run(prepare(full, MODEL_SETS["main"]), horizon=5, test_frac=0.2, out_dir=tmp / "plainimp", cv=3, models=plain)
-    assert not any(f in models_main.LAG_FEATURES for f in pd.read_csv(tmp / "plainimp" / "importance.csv").feature)
+    assert not any(map(models_main.is_history, pd.read_csv(tmp / "plainimp" / "importance.csv").feature))
     s, _ = run(full, horizon=5, test_frac=0.2, out_dir=tmp / "all", cv=3, window_max=True, threshold=500,
                importance=False, models=MODEL_SETS["all"])
     assert {"RF_history", "XGB_history", "RandomForest", "XGBoost", "Ridge", "Ridge_history", "Formula", "Holt"} <= set(s.index)
@@ -433,6 +433,7 @@ def main():
             args.holdout_map, col, unit, window_max=not args.at_horizon, top_features=top,
             train_runs=args.train_runs, threshold=args.threshold if name == "pressure" else None,
             importance=not args.no_importance, models=models)
+    results.zip_up(args.out_dir)
 
 
 if __name__ == "__main__":

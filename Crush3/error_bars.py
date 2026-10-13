@@ -55,6 +55,12 @@ def redraw(groups, stat, reps=REPS, seed=0):
     return np.nanpercentile(vals, [2.5, 97.5])
 
 
+def redraw_diff(a, b, stat, reps=REPS, seed=0):
+    """95% range of stat(b) - stat(a) when the runs are re-drawn and both are scored on the same re-draw.
+    a and b hold one item per run, in the same order (two models tested on the same runs)."""
+    return redraw(list(zip(a, b)), lambda g: stat([y for _, y in g]) - stat([x for x, _ in g]), reps, seed)
+
+
 def median_lead(groups):
     leads = np.concatenate(groups) if groups else np.array([])
     return np.median(leads) if len(leads) else np.nan
@@ -65,25 +71,34 @@ def real_share(groups):
     return real / alarms if alarms else np.nan
 
 
-def cell(oof, ev, horizon, threshold):
-    """One row per model for one window: the two numbers and their ranges. Same definitions as force_model.run()."""
+def pieces(oof, ev, horizon, threshold):
+    """What the two numbers are made of, one item per run so that the runs can be re-drawn:
+    model -> (warning times of its warned events, one array per run with an event; [alarms, real alarms], one pair per run).
+    Also returns the number of events and of runs with an event. Same definitions as force_model.run()."""
     keys = list(ev.index.names)
     o = oof.join(ev, on=keys, how="inner")
     o = o.assign(lead=o.cross_tick - o[TICK])
     o = o[(o.lead > 0) & (o.lead <= horizon)]
     event_runs = sorted(o.scenario_id.unique())
     calm = oof[NOW] < threshold
-    rows = []
+    out = {}
     for col in [c for c in oof.columns if c.startswith("pred_") and not c.startswith("pred_baseline")]:
         lead = o[o[col] >= threshold].groupby(keys).lead.max()  # one warning time per warned event
         by_run = lead.groupby("scenario_id").apply(lambda s: s.to_numpy())
-        leads = [by_run.get(r, np.array([])) for r in event_runs]
         call = calm & (oof[col] >= threshold)
         counts = pd.DataFrame({"alarms": call, "real": call & (oof.true >= threshold)}).groupby(oof.scenario_id).sum()
-        alarms = list(counts.to_numpy())
+        out[col[len("pred_"):]] = ([by_run.get(r, np.array([])) for r in event_runs], list(counts.to_numpy()))
+    return out, o.groupby(keys).ngroups, len(event_runs)
+
+
+def cell(oof, ev, horizon, threshold):
+    """One row per model for one window: the two numbers and their ranges."""
+    parts, events, event_runs = pieces(oof, ev, horizon, threshold)
+    rows = []
+    for model, (leads, alarms) in parts.items():
         (w_lo, w_hi), (a_lo, a_hi) = redraw(leads, median_lead), redraw(alarms, real_share)
-        rows.append({"model": col[len("pred_"):], "events": o.groupby(keys).ngroups, "events_warned": len(lead),
-                     "event_runs": len(event_runs), "alarms": int(counts.alarms.sum()),
+        rows.append({"model": model, "events": events, "events_warned": sum(len(x) for x in leads),
+                     "event_runs": event_runs, "alarms": int(sum(a[0] for a in alarms)),
                      "median_warning_s": median_lead(leads), "median_warning_s_lo": w_lo, "median_warning_s_hi": w_hi,
                      "alarms_real_share": real_share(alarms), "alarms_real_share_lo": a_lo, "alarms_real_share_hi": a_hi})
     return rows
@@ -135,6 +150,9 @@ def selftest():
     assert 10 <= lo < 30 < hi <= 50
     lo, hi = redraw([np.array([10, 2]), np.array([10, 8])], real_share, reps=200)
     assert (lo, hi) == (0.2, 0.8)
+    # two models on the same runs: always 3 s apart, so the difference has no spread however the runs fall
+    a = [np.array([v]) for v in (10.0, 20, 30, 40, 50)]
+    assert list(redraw_diff(a, [x + 3 for x in a], median_lead, reps=200)) == [3.0, 3.0]
     print("selftest ok")
 
 

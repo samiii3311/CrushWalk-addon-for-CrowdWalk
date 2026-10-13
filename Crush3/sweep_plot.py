@@ -86,9 +86,9 @@ def plot_data(plt, res, model, path):
     ax.set_ylim(0, max(100, r.median_warning_s.max() * 1.2, top))  # same scale as sweep_warning.png
     ax.set_xlim(left=0)
     if ranges:
-        ax.text(0, -0.2, "Vertical lines: 95% range when the test runs are re-drawn at random. "
+        ax.text(0, -0.2, "Vertical lines: 95% range when the test runs are re-drawn at random.\n"
                          "Lines are shifted slightly sideways so the ranges can be told apart.",
-                transform=ax.transAxes, fontsize=8)
+                transform=ax.transAxes, fontsize=8, va="top")
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", color="#e4e4e2", lw=0.8)
     fig.tight_layout()
@@ -191,6 +191,7 @@ def main():
             plot_data(plt, res, model, out / f"sweep_data_{model}.png")
     for name, bar in BARS.items():
         plot_bars(plt, res, out / name, *bar)
+    results.zip_up(out)
 
 
 if __name__ == "__main__":

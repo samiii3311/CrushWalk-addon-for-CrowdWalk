@@ -15,6 +15,9 @@ The same name on a later day makes a new folder; on the same day it is the same 
 Reading works with the short name too: fm_h120/pressure/importance.csv is looked up under ROOT,
 newest date first, when there is no such path where you are. The path that was picked is printed.
 
+The scripts that finish a result (force_model.py, sweep.py, sweep_plot.py) also write
+<folder>/<folder name>.zip with its graphs and tables, so a result can be fetched as one file.
+
     python3 results.py --selftest
 """
 
@@ -22,6 +25,7 @@ import os
 import re
 import sys
 import tempfile
+import zipfile
 from datetime import date
 from pathlib import Path
 
@@ -71,6 +75,18 @@ def find(path):
     return path
 
 
+def zip_up(folder):
+    """<folder>/<folder name>.zip with every graph and table in the folder, to fetch a result as one file.
+    The per-row predictions.csv files are left out: they are large and only error_bars.py needs them."""
+    folder = Path(folder)
+    out = folder / f"{folder.resolve().name}.zip"
+    files = [f for f in sorted(folder.rglob("*")) if f.suffix in (".png", ".csv") and f.name != "predictions.csv"]
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in files:
+            z.write(f, f.relative_to(folder))
+    print(f"zip: {out} ({len(files)} files)")
+
+
 def selftest():
     global ROOT
     ROOT = Path(tempfile.mkdtemp()) / "results"
@@ -89,6 +105,13 @@ def selftest():
     assert find("2026-10-10_fm_x/results.csv").read_text() == "2026-10-10"  # an exact folder name
     assert find("nothing/here.csv") == Path("nothing/here.csv")
     assert find(ROOT / "2026-10-10_fm_x") == ROOT / "2026-10-10_fm_x"
+    run = ROOT / "2026-10-12_fm_x"
+    (run / "h30_runsall").mkdir()
+    for name in ("sweep.png", "run.log", "h30_runsall/accuracy.csv", "h30_runsall/predictions.csv"):
+        (run / name).write_text("x")
+    zip_up(run)
+    zip_up(run)  # a second time replaces the zip and does not pack the old one into it
+    assert sorted(zipfile.ZipFile(run / "2026-10-12_fm_x.zip").namelist()) == ["h30_runsall/accuracy.csv", "results.csv", "sweep.png"]
     print("selftest ok")
 
 

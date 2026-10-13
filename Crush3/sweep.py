@@ -162,6 +162,7 @@ def main():
     background.start(args, args.out_dir / "run.log")
     sweep(load_data(args.data), [int(x) for x in args.windows.split(",")], [int(x) for x in args.runs.split(",")],
           args.out_dir, args.cv, args.threshold, MODEL_SETS[args.models])
+    results.zip_up(args.out_dir)
 
 
 if __name__ == "__main__":

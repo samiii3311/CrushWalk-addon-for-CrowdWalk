@@ -47,12 +47,21 @@ REPS = 2000
 NOW = "pred_baseline: now"
 
 
-def redraw(groups, stat, reps=REPS, seed=0):
-    """95% range of stat(groups) when the groups (one per run) are re-drawn with replacement."""
+def redraw_values(groups, stat, reps=REPS, seed=0):
+    """stat(groups) on each of `reps` re-draws of the groups (one per run), with replacement."""
     rng = np.random.default_rng(seed)
     n = len(groups)
-    vals = [stat([groups[i] for i in rng.integers(0, n, n)]) for _ in range(reps)]
-    return np.nanpercentile(vals, [2.5, 97.5])
+    return [stat([groups[i] for i in rng.integers(0, n, n)]) for _ in range(reps)]
+
+
+def redraw(groups, stat, reps=REPS, seed=0):
+    """95% range of stat(groups) when the groups (one per run) are re-drawn with replacement."""
+    return np.nanpercentile(redraw_values(groups, stat, reps, seed), [2.5, 97.5])
+
+
+def redraw_se(groups, stat, reps=REPS, seed=0):
+    """Standard error of stat(groups): its spread over the re-draws (used by the one-standard-error rule)."""
+    return np.nanstd(redraw_values(groups, stat, reps, seed))
 
 
 def redraw_diff(a, b, stat, reps=REPS, seed=0):

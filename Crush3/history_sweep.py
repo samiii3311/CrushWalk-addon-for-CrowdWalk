@@ -15,6 +15,16 @@ inputs change. Trains the two main models (models_main.py) once per look-back:
 Each look-back adds to the one before, so this is 6 trainings and not every combination.
 With --single, each look-back gets only its own change instead (back 60 = the 60 s change alone).
 
+With --search, the --back list is a pool and the script tries sets of them together (30+60 without
+10, for example), one path per model:
+  forward   start with no history, add the look-back that helps most, repeat until all are in
+  backward  start with all of them, drop the one whose loss hurts least, repeat until one is left
+"Helps most" = fewest missed events, then the highest share of real alarms (warning time is flat
+across look-backs, so it cannot rank them). A set both searches reach is trained once. The
+one-standard-error rule below is then applied over the sets on the two paths, and the set with the
+fewest look-backs that passes is marked (pick); ties go to the one whose longest look-back is shortest.
+Each training here has one model only, so the two models can also run as two parts (--models).
+
 The script prints one table and does not choose: you read the table and decide. Each row shows,
 next to its own numbers, the difference to the look-back before it and the 95% range of that
 difference. The difference is taken on the same test runs: the runs are re-drawn at random 2000
@@ -40,6 +50,7 @@ showing the log, `--stop` ends the job, `--foreground` runs it in the terminal (
 Usage (on the Linux machine):
     python3 history_sweep.py crush.duckdb --out-dir fm_history
     python3 history_sweep.py crush.duckdb --window 300 --back 60,120 --out-dir fm_history_h300
+    python3 history_sweep.py crush.duckdb --search both --back 4,10,30,60,120,300 --out-dir fm_combo
     python3 history_sweep.py --selftest
 """
 
@@ -76,17 +87,13 @@ def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False):
     ev = first_crossings(df, TARGET, threshold)
     parts, rows = {}, []
     for before, back in zip([None] + backs, backs):
-        too_far = [c for c in df.columns if models_main.is_history(c)
-                   and (int(c.rpartition("_d")[2]) != back if single else int(c.rpartition("_d")[2]) > back)]
-        s, oof = run(df.drop(columns=too_far), window, 0.2, out_dir / f"back{back}", cv=cv, window_max=True,
+        keep = {back} if single else {b for b in backs if b <= back}
+        s, oof = run(drop_history(df, keep), window, 0.2, out_dir / f"back{back}", cv=cv, window_max=True,
                      threshold=threshold, importance=False, models=models_main.new_models if back else no_history)
         parts[back], events, _ = pieces(oof, ev, window, threshold)
         for model in models_main.new_models():
             leads, alarms = parts[back][model]
-            row = {"back_s": back, "model": model, "MAE": s.loc[model, ("MAE", "mean")], "events": events,
-                   "events_missed": events - sum(len(x) for x in leads), "median_warning_s": median_lead(leads),
-                   "alarms_real_share": real_share(alarms),
-                   "warning_se": redraw_se(leads, median_lead), "real_se": redraw_se(alarms, real_share)}
+            row = {"back_s": back, "model": model, **measures(s, parts[back], model, events)}
             if before is not None:  # the gain over the look-back before it, on the same re-drawn runs
                 old_leads, old_alarms = parts[before][model]
                 (w_lo, w_hi), (a_lo, a_hi) = redraw_diff(old_leads, leads, median_lead), redraw_diff(old_alarms, alarms, real_share)
@@ -98,6 +105,93 @@ def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False):
         res.to_csv(out_dir / "results.csv", index=False)
     show(res)
     return res
+
+
+def drop_history(df, keep):
+    """df without the history columns whose look-back is not in keep."""
+    return df.drop(columns=[c for c in df.columns if models_main.is_history(c) and int(c.rpartition("_d")[2]) not in keep])
+
+
+def measures(s, parts, model, events):
+    leads, alarms = parts[model]
+    return {"MAE": s.loc[model, ("MAE", "mean")], "events": events, "events_missed": events - sum(len(x) for x in leads),
+            "median_warning_s": median_lead(leads), "alarms_real_share": real_share(alarms),
+            "warning_se": redraw_se(leads, median_lead), "real_se": redraw_se(alarms, real_share)}
+
+
+def search(df, pool, window, out_dir, cv=5, threshold=1062.0, directions=("forward", "backward"), names=None):
+    """Forward and/or backward search over sets of look-backs, one path per model (see the top of the file)."""
+    pool = sorted(set(pool) - {0})
+    df = baselines.add_holt(models_main.add_lags(df, pool))
+    ev = first_crossings(df, TARGET, threshold)
+    rows = {}  # (model, look-backs) -> row; a set reached twice is trained once
+
+    def save():
+        res = rule(pd.DataFrame(list(rows.values())))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        res.to_csv(out_dir / "results.csv", index=False)
+        return res
+
+    def score(model, backs):
+        if (model, backs) not in rows:
+            tag = "+".join(map(str, backs))
+            only = lambda columns=None: {model: models_main.new_models(columns)[model]}
+            s, oof = run(drop_history(df, set(backs)), window, 0.2, out_dir / f"{model}_{tag}", cv=cv, window_max=True,
+                         threshold=threshold, importance=False, models=only)
+            parts, events, _ = pieces(oof, ev, window, threshold)
+            rows[model, backs] = {"model": model, "backs": tag, "n_back": len(backs), "longest_s": backs[-1],
+                                  "path": "", **measures(s, parts, model, events)}
+            save()
+        return rows[model, backs]
+
+    rank = lambda r: (r["events_missed"], -np.nan_to_num(r["alarms_real_share"], nan=-1.0), r["longest_s"])
+    for model in names or list(models_main.new_models()):
+        for direction in directions:
+            def mark(backs):
+                rows[model, backs]["path"] = (rows[model, backs]["path"] + " " + direction).strip()
+                save()
+            cur = () if direction == "forward" else tuple(pool)
+            if cur:
+                score(model, cur)
+                mark(cur)
+            while True:
+                if direction == "forward":
+                    nxt = [tuple(sorted(cur + (b,))) for b in pool if b not in cur]
+                else:
+                    nxt = [tuple(x for x in cur if x != b) for b in cur] if len(cur) > 1 else []
+                if not nxt:
+                    break
+                cur = min(nxt, key=lambda c: rank(score(model, c)))
+                mark(cur)
+    res = save()
+    show_search(res)
+    return res
+
+
+def rule(res):
+    """one_se() over the sets on the search paths; pick = fewest look-backs passing both, then the shortest longest one."""
+    for c in ("within_warning", "within_real", "pick"):
+        res[c] = False
+    on = res[res.path != ""]
+    if len(on):
+        res.loc[on.index, ["within_warning", "within_real"]] = one_se(on.copy())[["within_warning", "within_real"]].astype(bool)
+    ok = res[res.within_warning.astype(bool) & res.within_real.astype(bool)].sort_values(["n_back", "longest_s"])
+    res.loc[ok.groupby("model").head(1).index, "pick"] = True
+    return res
+
+
+def show_search(res):
+    pct = lambda s: (s * 100).round(1)
+    t = pd.DataFrame({"model": res.model, "look-backs": res.backs, "path": res.path.replace("", "-"), "MAE": res.MAE.round(2),
+                      "missed": res.events_missed.astype(str) + " of " + res.events.astype(str),
+                      "warning_s": res.median_warning_s, "se_w": res.warning_se.round(1),
+                      "real_%": pct(res.alarms_real_share), "se_r": pct(res.real_se),
+                      "1se": res.within_warning.map({True: "w", False: "-"}) + res.within_real.map({True: "r", False: "-"}),
+                      "pick": res.pick.map({True: "<-", False: ""}), "n": res.n_back, "l": res.longest_s})
+    print("\n== sets of look-backs; path = which search step chose the set (- = tried, not chosen) ==")
+    print(t.sort_values(["model", "n", "l"], kind="stable").drop(columns=["n", "l"]).to_string(index=False))
+    print("1se: w / r = within one standard error of the best set on the paths, on warning / real alarms,")
+    print("among the path sets that miss the fewest events. pick = the passing set with the fewest look-backs.")
 
 
 def one_se(res):
@@ -156,6 +250,16 @@ def selftest():
     with contextlib.redirect_stdout(log):
         sweep(df, [5, 0, 1], 5, Path(tempfile.mkdtemp()), cv=3, threshold=500, single=True)
     assert "(+2 history)" in log.getvalue() and "(+4 history)" not in log.getvalue()
+    # --search over 1 and 5, RF only: both searches reach the same 3 sets, and each is trained once
+    log, out = io.StringIO(), Path(tempfile.mkdtemp())
+    with contextlib.redirect_stdout(log):
+        res = search(df, [5, 1, 0], 5, out, cv=3, threshold=500, names=["RF_history"])
+    log = log.getvalue()
+    print(log[log.find("== sets"):])
+    assert sorted(res.backs) == ["1", "1+5", "5"] and log.count("models: RF_history\n") == 3
+    assert "(+2 history)" in log and "(+4 history)" in log  # a single look-back, then both together
+    assert res.set_index("backs").path["1+5"] == "forward backward"  # last forward step = first backward one
+    assert res.pick.sum() == 1 and len(pd.read_csv(out / "results.csv")) == 3
     print("\nselftest ok")
 
 
@@ -170,13 +274,22 @@ def main():
     p.add_argument("--threshold", type=float, default=1062.0, help="pressure (N) that counts as a crossing (default 1062)")
     p.add_argument("--single", action="store_true",
                    help="each look-back gets only its own change, not the shorter ones as well")
+    p.add_argument("--search", choices=("forward", "backward", "both"),
+                   help="try sets of the --back look-backs together, by forward and/or backward search")
+    p.add_argument("--models", help="with --search: only these models, comma-separated (default RF_history,XGB_history)")
     p.add_argument("--out-dir", type=Path, default=Path("fm_history"))
     background.stop_requested()
     background.add_args(p)
     args = p.parse_args()
     args.out_dir = results.new_dir(args.out_dir)
     background.start(args, args.out_dir / "run.log")
-    sweep(load_data(args.data), [int(x) for x in args.back.split(",")], args.window, args.out_dir, args.cv, args.threshold, args.single)
+    backs = [int(x) for x in args.back.split(",")]
+    if args.search:
+        search(load_data(args.data), backs, args.window, args.out_dir, args.cv, args.threshold,
+               ("forward", "backward") if args.search == "both" else (args.search,),
+               args.models.split(",") if args.models else None)
+    else:
+        sweep(load_data(args.data), backs, args.window, args.out_dir, args.cv, args.threshold, args.single)
     results.zip_up(args.out_dir)
 
 

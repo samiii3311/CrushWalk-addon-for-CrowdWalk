@@ -11,6 +11,7 @@ first alarm came (median_warning_s in results.csv).
 
   sweep_data_<model>.png   does more data help? One line per window, crush runs used for
                            training along the bottom.
+  sweep_data_real_<model>.png  the same lines for the share of alarms that were real.
   sweep_warning.png        how far ahead? One bar per window and model, trained on the
                            largest size.
   sweep_alarms.png         the same bars for the share of alarms that were real
@@ -58,32 +59,36 @@ def largest(res):
     return res.loc[res.groupby(["model", "window_s"]).crush_runs.idxmax()]
 
 
-def plot_data(plt, res, model, path):
-    r = res[res.model == model]
+def plot_data(plt, res, model, path, col="median_warning_s", scale=1, unit="s",
+              ylabel="Typical warning before an event (s)"):
+    r = res[res.model == model].copy()
+    for c in (col, f"{col}_lo", f"{col}_hi"):
+        if c in r:
+            r[c] = r[c] * scale
     windows = sorted(r.window_s.unique())
-    ranges = "median_warning_s_lo" in r  # error_bars.py adds the 95% range: a vertical line through each point
+    ranges = f"{col}_lo" in r  # error_bars.py adds the 95% range: a vertical line through each point
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=200)
     lines = []
     for i, w in enumerate(windows):
         g = r[r.window_s == w].sort_values("crush_runs")
-        y = g.median_warning_s.to_numpy()
+        y = g[col].to_numpy()
         # with ranges, each window's line is shifted a little sideways so the vertical lines don't hide each other
         x = g.crush_runs.to_numpy() + (DODGE * (i - (len(windows) - 1) / 2) if ranges else 0)
         colour = LINE_COLOURS[i % len(LINE_COLOURS)]
         # a colour and a marker shape per window, so the legend can be read without relying on colour alone
         line, = ax.plot(x, y, color=colour, lw=2,
-                        marker=MARKERS[i % len(MARKERS)], ms=6, label=f"{label(w)}  ({y[-1]:.0f} s)")
+                        marker=MARKERS[i % len(MARKERS)], ms=6, label=f"{label(w)}  ({y[-1]:.0f}{'' if unit == '%' else ' '}{unit})")
         if ranges:
-            ax.vlines(x, g.median_warning_s_lo, g.median_warning_s_hi, color=colour, lw=1.2, alpha=0.8)
+            ax.vlines(x, g[f"{col}_lo"], g[f"{col}_hi"], color=colour, lw=1.2, alpha=0.8)
         lines.append((y[-1], line))
     lines.sort(key=lambda t: -t[0])  # legend top to bottom = line ends top to bottom
     ax.legend([l for _, l in lines], [l.get_label() for _, l in lines], title="Window (value at the right end)",
               loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False, fontsize=11, title_fontsize=10)
     ax.set_title(f"{model}: does more data help?", loc="left", fontsize=13, fontweight="bold")
     ax.set_xlabel("Crush runs used for training", fontsize=11)
-    ax.set_ylabel("Typical warning before an event (s)", fontsize=11)
-    top = r.median_warning_s_hi.max() * 1.1 if ranges else 0
-    ax.set_ylim(0, max(100, r.median_warning_s.max() * 1.2, top))  # same scale as sweep_warning.png
+    ax.set_ylabel(ylabel, fontsize=11)
+    top = r[f"{col}_hi"].max() * 1.1 if ranges else 0
+    ax.set_ylim(0, 100 if unit == "%" else max(100, r[col].max() * 1.2, top))  # same scale as the bar graphs
     ax.set_xlim(left=0)
     if ranges:
         ax.text(0, -0.2, "Vertical lines: 95% range when the test runs are re-drawn at random.\n"
@@ -189,6 +194,9 @@ def main():
     for model in res.model.unique():
         if res[res.model == model].train_runs.nunique() > 1:  # one training size has no line to draw
             plot_data(plt, res, model, out / f"sweep_data_{model}.png")
+            if "alarms_real_share" in res:
+                plot_data(plt, res, model, out / f"sweep_data_real_{model}.png", "alarms_real_share", 100, "%",
+                          "Alarms that were real (%)")
     for name, bar in BARS.items():
         plot_bars(plt, res, out / name, *bar)
     results.zip_up(out)

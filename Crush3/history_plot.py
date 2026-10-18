@@ -113,7 +113,7 @@ SETS_TXT = {
 
 def draw_branches(ax, g, col, label):
     """Sets tried but not kept: a faint dot joined to the path set it grew from (forward) or was cut from (backward)."""
-    tried = {frozenset(str(b).split("+")): r for _, r in g.iterrows()}
+    tried = {frozenset(str(r.backs).split("+")): r for _, r in g.iterrows()}
     on = {k: r for k, r in tried.items() if r.path}
     for k, r in tried.items():
         if r.path:

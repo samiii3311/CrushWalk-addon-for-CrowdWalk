@@ -98,6 +98,85 @@ def holt_share(first_csv):
     return pd.read_csv(f, index_col=0).loc["Holt", "alarms_real_share"]
 
 
+SETS_TXT = {
+    "en": dict(x="Number of look-backs in the set", y="Alarms that were real (%)",
+               model={"RF_history": "Random Forest + history", "XGB_history": "XGBoost + history"},
+               fwd="forward search (adds one at a time)", bwd="backward search (drops one at a time)",
+               ref="{} s alone (picked earlier): {:.0f}%", holt="Holt ({:.0f}%)",
+               note="{} events. Shaded: ±1 standard error. Labels: look-back (s) added (+) or dropped (−)"),
+    "ja": dict(x="組み合わせたさかのぼる長さの数", y="警報の的中率(%)",
+               model={"RF_history": "Random Forest+履歴", "XGB_history": "XGBoost+履歴"},
+               fwd="前向き探索(一つずつ加える)", bwd="後ろ向き探索(一つずつ外す)",
+               ref="{}秒のみ(以前の選択): {:.0f}%", holt="Holtの方法({:.0f}%)", note=""),
+}
+
+
+def draw_sets(res, holt, ref, lang, path):
+    """One panel per model: real alarms of each set on the forward and backward paths, against set size."""
+    t = SETS_TXT[lang]
+    models = sorted(res.model.unique())
+    fig, axes = plt.subplots(1, len(models), figsize=(10, 5.8), dpi=200, sharey=True, squeeze=False)
+    for ax, model in zip(axes[0], models):
+        g, col = res[res.model == model], COLOURS.get(model, "#555555")
+        for direction, ls, dy, va in (("forward", "-", 3, "bottom"), ("backward", "--", -3, "top")):
+            p = g[g.path.str.contains(direction)].sort_values("n_back")
+            x, y, se = p.n_back, p.alarms_real_share * 100, p.real_se * 100
+            miss = p.events_missed > 0
+            if direction == "forward":
+                ax.fill_between(x, y - se, y + se, color=col, alpha=0.15, lw=0)
+            ax.plot(x, y, color=col, ls=ls, lw=1.8, label=t["fwd" if direction == "forward" else "bwd"])
+            ax.scatter(x[~miss], y[~miss], s=28, color=col, zorder=3)
+            ax.scatter(x[miss], y[miss], s=28, facecolor="white", edgecolor=col, lw=1.4, zorder=3)
+            # label each step with the look-back it added (forward, above) or dropped (backward, below);
+            # backward labels only where the backward path left the forward one
+            sets = [set(str(b).split("+")) for b in p.backs]
+            for i, (_, r) in enumerate(p.iterrows()):
+                if direction == "forward":
+                    lab = "+" + "".join(sets[i] - sets[i - 1]) if i else str(r.backs)
+                elif "forward" not in r.path and i + 1 < len(sets):
+                    lab = "−" + "".join(sets[i + 1] - sets[i])
+                else:
+                    continue
+                ax.annotate(lab, (r.n_back, r.alarms_real_share * 100 + dy), ha="center", va=va, fontsize=13, color=col)
+        single = g[g.backs.astype(str) == str(ref.get(model))]
+        if len(single):
+            v = single.alarms_real_share.iloc[0] * 100
+            ax.axhline(v, color="#555555", ls=":", lw=1.6, label=t["ref"].format(ref[model], v))
+        if holt is not None:
+            ax.axhline(holt * 100, color="#009E73", ls="--", lw=1.4, label=t["holt"].format(holt * 100))
+        ax.set_title(t["model"].get(model, model), fontsize=15, color=col)
+        ax.set_xticks(range(1, int(res.n_back.max()) + 1))
+        ax.set_xlim(0.6, res.n_back.max() + 0.4)
+        ax.set_ylim(40, 100)
+        ax.set_xlabel(t["x"], fontsize=14)
+        ax.tick_params(labelsize=13)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+        ax.legend(loc="lower center", frameon=False, fontsize=12)
+    axes[0][0].set_ylabel(t["y"], fontsize=14)
+    if t["note"]:
+        fig.text(0.07, 0.01, t["note"].format(int(res.events.iloc[0])), fontsize=12)
+    fig.tight_layout(rect=(0, 0.04 if t["note"] else 0, 1, 1))
+    fig.savefig(path)
+    plt.close(fig)
+    print("wrote", path)
+
+
+def plot_sets(path, out_dir, ref):
+    res = pd.read_csv(path)
+    res["path"] = res.path.fillna("")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    crossings = sorted(Path(path).parent.glob("*/crossings.csv"))  # Holt is the same in every training
+    holt = pd.read_csv(crossings[0], index_col=0).loc["Holt", "alarms_real_share"] if crossings else None
+    draw_sets(res, holt, ref, "en", out_dir / "lookback_sets_en.png")
+    have = {f.name for f in font_manager.fontManager.ttflist}
+    ja = next((f for f in JA_FONTS if f in have), None)
+    if ja:
+        plt.rcParams["font.family"] = ja
+        draw_sets(res, holt, ref, "ja", out_dir / "lookback_sets_ja.png")
+    return res
+
+
 def plot(paths, out_dir):
     res = combine(paths)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -133,6 +212,14 @@ def selftest():
     assert picks(res) == {"RF_history": 0, "XGB_history": 0}
     assert not res[res.back_s >= 20].within_real.astype(bool).any()
     assert (tmp / "out" / "lookback_real_en.png").exists()
+    # sets mode: a --search results.csv (has a backs column) gets the sets graph
+    (tmp / "s").mkdir()
+    pd.DataFrame([{"model": m, "backs": b, "n_back": b.count("+") + 1, "path": p, "events": 39, "events_missed": 0,
+                   "alarms_real_share": 0.7, "real_se": 0.05} for m in COLOURS
+                  for b, p in (("4", ""), ("10", "forward backward"), ("4+10", "forward"), ("10+30", "backward"),
+                               ("4+10+30", "forward backward"))]).to_csv(tmp / "s" / "results.csv", index=False)
+    plot_sets(tmp / "s" / "results.csv", tmp / "out_s", {"RF_history": 30, "XGB_history": 4})
+    assert (tmp / "out_s" / "lookback_sets_en.png").exists()
     print("\nselftest ok")
 
 
@@ -142,10 +229,15 @@ def main():
     p = argparse.ArgumentParser(description="Join history_sweep.py --single parts, redo the one-SE rule, draw the graph.")
     p.add_argument("results", nargs="+", help="results.csv of each part, shortest look-backs first")
     p.add_argument("--out-dir", type=Path, default=Path("fm_single_plot"))
+    p.add_argument("--ref", default="RF_history=30,XGB_history=4",
+                   help="sets graph only: the single look-back picked earlier, drawn as a reference line (model=s,...)")
     args = p.parse_args()
     paths = [results.find(r) for r in args.results]
     out = results.new_dir(args.out_dir)
-    plot(paths, out)
+    if "backs" in pd.read_csv(paths[0], nrows=0).columns:  # a --search results.csv
+        plot_sets(paths[0], out, {m: int(s) for m, s in (x.split("=") for x in args.ref.split(","))})
+    else:
+        plot(paths, out)
     results.zip_up(out)
 
 

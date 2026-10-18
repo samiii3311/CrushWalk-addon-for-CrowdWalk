@@ -156,7 +156,7 @@ def selftest():
 
     df = pd.concat([one_run(f"r{i}") for i in range(6)], ignore_index=True)
     rho = correlation(df, ["prev_inflow", "inflow_copy", "noise"])
-    g = groups(rho, 0.2)
+    g = [sorted(x) for x in groups(rho, 0.2)]  # members come in column order
     assert ["inflow_copy", "prev_inflow"] in g and ["noise"] in g, g
     out = Path(tempfile.mkdtemp())
     log = io.StringIO()

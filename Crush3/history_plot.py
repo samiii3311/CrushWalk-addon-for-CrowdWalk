@@ -102,7 +102,7 @@ SETS_TXT = {
     "en": dict(x="Number of look-backs in the set", y="Alarms that were real (%)",
                model={"RF_history": "Random Forest + history", "XGB_history": "XGBoost + history"},
                fwd="forward search (adds one at a time)", bwd="backward search (drops one at a time)",
-               ref="{} s alone (picked earlier): {:.0f}%", holt="Holt ({:.0f}%)",
+               ref="{} s alone (picked earlier): {:.0f}%", holt="Holt ({:.0f}%)", tried="tried, not kept",
                note="{} events. Shaded: ±1 standard error. Labels: look-back (s) added (+) or dropped (−)"),
     "ja": dict(x="組み合わせたさかのぼる長さの数", y="警報の的中率(%)",
                model={"RF_history": "Random Forest+履歴", "XGB_history": "XGBoost+履歴"},
@@ -111,13 +111,34 @@ SETS_TXT = {
 }
 
 
-def draw_sets(res, holt, ref, lang, path):
+def draw_branches(ax, g, col, label):
+    """Sets tried but not kept: a faint dot joined to the path set it grew from (forward) or was cut from (backward)."""
+    tried = {frozenset(str(b).split("+")): r for _, r in g.iterrows()}
+    on = {k: r for k, r in tried.items() if r.path}
+    for k, r in tried.items():
+        if r.path:
+            continue
+        y = r.alarms_real_share * 100
+        up = next((q for q in on if len(q) == len(k) - 1 and q < k and "forward" in on[q].path), None)
+        down = next((q for q in on if len(q) == len(k) + 1 and q > k and "backward" in on[q].path), None)
+        parent = up if up is not None else down
+        if parent is not None:
+            ax.plot([on[parent].n_back, r.n_back], [on[parent].alarms_real_share * 100, y], color=col, alpha=0.25, lw=1)
+        lab = "".join(k) if parent is None else ("+" + "".join(k - parent) if up is not None else "−" + "".join(parent - k))
+        ax.annotate(lab, (r.n_back + 0.07, y), va="center", fontsize=9, color=col, alpha=0.8)
+        ax.scatter(r.n_back, y, s=14, color=col, alpha=0.35, zorder=2, label=label)
+        label = None  # one legend entry per panel
+
+
+def draw_sets(res, holt, ref, lang, path, branches=False):
     """One panel per model: real alarms of each set on the forward and backward paths, against set size."""
     t = SETS_TXT[lang]
     models = sorted(res.model.unique())
     fig, axes = plt.subplots(1, len(models), figsize=(10, 5.8), dpi=200, sharey=True, squeeze=False)
     for ax, model in zip(axes[0], models):
         g, col = res[res.model == model], COLOURS.get(model, "#555555")
+        if branches:
+            draw_branches(ax, g, col, t["tried"])
         for direction, ls, dy, va in (("forward", "-", 3, "bottom"), ("backward", "--", -3, "top")):
             p = g[g.path.str.contains(direction)].sort_values("n_back")
             x, y, se = p.n_back, p.alarms_real_share * 100, p.real_se * 100
@@ -169,6 +190,7 @@ def plot_sets(path, out_dir, ref):
     crossings = sorted(Path(path).parent.glob("*/crossings.csv"))  # Holt is the same in every training
     holt = pd.read_csv(crossings[0], index_col=0).loc["Holt", "alarms_real_share"] if crossings else None
     draw_sets(res, holt, ref, "en", out_dir / "lookback_sets_en.png")
+    draw_sets(res, holt, ref, "en", out_dir / "lookback_sets_branches_en.png", branches=True)  # every set tried
     have = {f.name for f in font_manager.fontManager.ttflist}
     ja = next((f for f in JA_FONTS if f in have), None)
     if ja:
@@ -219,7 +241,7 @@ def selftest():
                   for b, p in (("4", ""), ("10", "forward backward"), ("4+10", "forward"), ("10+30", "backward"),
                                ("4+10+30", "forward backward"))]).to_csv(tmp / "s" / "results.csv", index=False)
     plot_sets(tmp / "s" / "results.csv", tmp / "out_s", {"RF_history": 30, "XGB_history": 4})
-    assert (tmp / "out_s" / "lookback_sets_en.png").exists()
+    assert (tmp / "out_s" / "lookback_sets_en.png").exists() and (tmp / "out_s" / "lookback_sets_branches_en.png").exists()
     print("\nselftest ok")
 
 

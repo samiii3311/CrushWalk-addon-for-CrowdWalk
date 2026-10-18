@@ -115,6 +115,7 @@ def draw_branches(ax, g, col, label):
     """Sets tried but not kept: a faint dot joined to the path set it grew from (forward) or was cut from (backward)."""
     tried = {frozenset(str(r.backs).split("+")): r for _, r in g.iterrows()}
     on = {k: r for k, r in tried.items() if r.path}
+    labels = {}  # x -> [(y, text)], spread apart below so they don't overlap
     for k, r in tried.items():
         if r.path:
             continue
@@ -125,9 +126,15 @@ def draw_branches(ax, g, col, label):
         if parent is not None:
             ax.plot([on[parent].n_back, r.n_back], [on[parent].alarms_real_share * 100, y], color=col, alpha=0.25, lw=1)
         lab = "".join(k) if parent is None else ("+" + "".join(k - parent) if up is not None else "−" + "".join(parent - k))
-        ax.annotate(lab, (r.n_back + 0.07, y), va="center", fontsize=9, color=col, alpha=0.8)
-        ax.scatter(r.n_back, y, s=14, color=col, alpha=0.35, zorder=2, label=label)
+        labels.setdefault(r.n_back, []).append((y, lab))
+        face = "white" if r.events_missed > 0 else col  # hollow = misses an event
+        ax.scatter(r.n_back, y, s=14, facecolor=face, edgecolor=col, alpha=0.5, zorder=2, label=label)
         label = None  # one legend entry per panel
+    for x, ys in labels.items():
+        last = -1e9
+        for y, lab in sorted(ys):
+            last = max(y, last + 1.6)  # at least 1.6 points apart
+            ax.annotate(lab, (x + 0.07, last), va="center", fontsize=9, color=col, alpha=0.8)
 
 
 def draw_sets(res, holt, ref, lang, path, branches=False):
@@ -173,7 +180,10 @@ def draw_sets(res, holt, ref, lang, path, branches=False):
         ax.tick_params(labelsize=13)
         for s in ("top", "right"):
             ax.spines[s].set_visible(False)
-        ax.legend(loc="lower center", frameon=False, fontsize=12)
+        if branches:  # the lower part holds the weak sets, so the legend goes on top
+            ax.legend(loc="upper center", ncol=2, frameon=False, fontsize=10)
+        else:
+            ax.legend(loc="lower center", frameon=False, fontsize=12)
     axes[0][0].set_ylabel(t["y"], fontsize=14)
     if t["note"]:
         fig.text(0.07, 0.01, t["note"].format(int(res.events.iloc[0])), fontsize=12)

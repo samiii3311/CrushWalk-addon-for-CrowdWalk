@@ -25,6 +25,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
+import numpy as np
 import pandas as pd
 
 import results
@@ -102,7 +103,7 @@ SETS_TXT = {
     "en": dict(x="Number of look-backs in the set", y="Alarms that were real (%)",
                model={"RF_history": "Random Forest + history", "XGB_history": "XGBoost + history"},
                fwd="forward search (adds one at a time)", bwd="backward search (drops one at a time)",
-               ref="{} s alone (picked earlier): {:.0f}%", holt="Holt ({:.0f}%)", tried="tried, not kept",
+               ref="{} s alone (picked earlier): {:.0f}%", holt="Holt ({:.0f}%)", tried="tried, not kept", missed=", misses an event",
                note="{} events. Shaded: ±1 standard error. Labels: look-back (s) added (+) or dropped (−)"),
     "ja": dict(x="組み合わせたさかのぼる長さの数", y="警報の的中率(%)",
                model={"RF_history": "Random Forest+履歴", "XGB_history": "XGBoost+履歴"},
@@ -111,7 +112,7 @@ SETS_TXT = {
 }
 
 
-def draw_branches(ax, g, col, label):
+def draw_branches(ax, g, col, label, missed):
     """Sets tried but not kept: a faint dot joined to the path set it grew from (forward) or was cut from (backward)."""
     tried = {frozenset(str(r.backs).split("+")): r for _, r in g.iterrows()}
     on = {k: r for k, r in tried.items() if r.path}
@@ -128,13 +129,17 @@ def draw_branches(ax, g, col, label):
         lab = "".join(k) if parent is None else ("+" + "".join(k - parent) if up is not None else "−" + "".join(parent - k))
         labels.setdefault(r.n_back, []).append((y, lab))
         face = "white" if r.events_missed > 0 else col  # hollow = misses an event
-        ax.scatter(r.n_back, y, s=14, facecolor=face, edgecolor=col, alpha=0.5, zorder=2, label=label)
-        label = None  # one legend entry per panel
+        ax.scatter(r.n_back, y, s=14, facecolor=face, edgecolor=col, alpha=0.5, zorder=2)
+    ax.scatter([], [], s=14, color=col, alpha=0.5, label=label)  # legend entries, filled and hollow
+    if (g[g.path == ""].events_missed > 0).any():
+        ax.scatter([], [], s=14, facecolor="white", edgecolor=col, label=label + missed)
     for x, ys in labels.items():
-        last = -1e9
-        for y, lab in sorted(ys):
-            last = max(y, last + 1.6)  # at least 1.6 points apart
-            ax.annotate(lab, (x + 0.07, last), va="center", fontsize=9, color=col, alpha=0.8)
+        ys, pos = sorted(ys), []
+        for y, _ in ys:
+            pos.append(max(y, pos[-1] + 1.4) if pos else y)  # at least 1.4 points apart
+        shift = np.mean([y for y, _ in ys]) - np.mean(pos)  # centre the stack on the dots, not above them
+        for (y, lab), q in zip(ys, pos):
+            ax.annotate(lab, (x + 0.07, q + shift), va="center", fontsize=9, color=col, alpha=0.8)
 
 
 def draw_sets(res, holt, ref, lang, path, branches=False):
@@ -145,7 +150,7 @@ def draw_sets(res, holt, ref, lang, path, branches=False):
     for ax, model in zip(axes[0], models):
         g, col = res[res.model == model], COLOURS.get(model, "#555555")
         if branches:
-            draw_branches(ax, g, col, t["tried"])
+            draw_branches(ax, g, col, t["tried"], t["missed"])
         for direction, ls, dy, va in (("forward", "-", 3, "bottom"), ("backward", "--", -3, "top")):
             p = g[g.path.str.contains(direction)].sort_values("n_back")
             x, y, se = p.n_back, p.alarms_real_share * 100, p.real_se * 100
@@ -181,7 +186,7 @@ def draw_sets(res, holt, ref, lang, path, branches=False):
         for s in ("top", "right"):
             ax.spines[s].set_visible(False)
         if branches:  # the lower part holds the weak sets, so the legend goes on top
-            ax.legend(loc="upper center", ncol=2, frameon=False, fontsize=10)
+            ax.legend(loc="upper center", frameon=False, fontsize=10)
         else:
             ax.legend(loc="lower center", frameon=False, fontsize=12)
     axes[0][0].set_ylabel(t["y"], fontsize=14)

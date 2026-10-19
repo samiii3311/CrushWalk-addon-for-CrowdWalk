@@ -150,7 +150,7 @@ def prepare(df, models, holt=True):
 
 
 def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout_map=None, target=TARGET, unit="N",
-        window_max=False, top_features=None, train_runs=None, threshold=None, importance=True, models=None):
+        window_max=False, top_features=None, train_runs=None, threshold=None, importance=True, models=None, drop=()):
     models = models or MODEL_SETS["main"]
     df = prepare(df, models, holt=target == TARGET)
     print(f"\n######## target: {target} ({unit}), "
@@ -168,7 +168,13 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
         # optimistic; rank inside each fold if a top-K result ever becomes a headline number
         features = [f for f in top_features if f in features]
         print(f"top features only: kept {len(features)}: {', '.join(features)}")
-    plain = [f for f in features if not models_main.is_history(f)]  # for the models without history
+    if drop:
+        missing = [c for c in drop if c not in features]
+        if missing:  # a typo would otherwise drop nothing and look like a result
+            sys.exit(f"--drop: not an input here: {', '.join(missing)}")
+        features = [c for c in features if c not in drop]
+        print(f"dropped {len(drop)} inputs: {', '.join(drop)}")
+    plain =[f for f in features if not models_main.is_history(f)]  # for the models without history
     names = list(models(df.columns))
     folds = make_folds(df, test_frac, cv, holdout_map)
     print(f"rows: {len(df):,}; features: {len(plain)} (+{len(features) - len(plain)} history); folds: {len(folds)}; "
@@ -334,6 +340,10 @@ def selftest():
     run(df.assign(max_push_force=1.0, prev_max_compression_pressure=2.0), horizon=5, test_frac=0.2,
         out_dir=tmp / "obs", models=plain, cv=3, observable_only=True)
     assert set(pd.read_csv(tmp / "obs" / "importance.csv").feature) == {"prev_inflow", "agent_count"}
+    # --drop: the named input is gone from the features
+    run(df, horizon=5, test_frac=0.2, out_dir=tmp / "drop", models=plain, cv=3, drop=["agent_count"])
+    kept = set(pd.read_csv(tmp / "drop" / "importance.csv").feature)
+    assert "agent_count" not in kept and "prev_inflow" in kept, kept
     assert add_target(df, 5).set_index([TICK, "scenario_id"]).target[(0, "r0")] == df[TARGET][5]
 
     # held-time target: its own column is the target, and observable-only hides it from the features
@@ -412,6 +422,11 @@ def main():
     p.add_argument("--models", choices=MODEL_SETS, default="main",
                    help="main = RF and XGBoost with history (models_main.py, default); other = the comparison "
                         "models (models_other.py); all = both")
+    p.add_argument("--only", help="train only these models of the set, comma-separated (e.g. RF_history)")
+    p.add_argument("--back", help="history look-backs in ticks, comma-separated (default: LAGS in models_main.py, "
+                                  "10,30,60); the chosen ones are RF 30, XGB 4")
+    p.add_argument("--drop", default="", help="inputs to leave out, comma-separated (e.g. the 'removed' list of an "
+                                              "input_groups.py row)")
     background.stop_requested()
     background.add_args(p)
     args = p.parse_args()
@@ -423,7 +438,15 @@ def main():
             p.error("--top-features needs --features-from <importance.csv>")
         top = list(pd.read_csv(results.find(args.features_from)).feature[:args.top_features])
     models = MODEL_SETS[args.models]
-    df = prepare(load_data(args.data), models, holt="pressure" in args.target)  # once, not once per target
+    if args.only:
+        only, full = args.only.split(","), models
+        if set(only) - set(full()):
+            p.error(f"--only: models in --models {args.models} are {', '.join(full())}")
+        models = lambda columns=None: {k: v for k, v in full(columns).items() if k in only}
+    df = load_data(args.data)
+    if args.back:  # history at these look-backs; prepare() then sees history columns and adds no others
+        df = models_main.add_lags(df, [int(x) for x in args.back.split(",")])
+    df = prepare(df, models, holt="pressure" in args.target)  # once, not once per target
     for name in args.target:
         col, unit = TARGETS[name]
         if col not in df:
@@ -432,7 +455,7 @@ def main():
         run(df, args.horizon, args.test_frac, args.out_dir / name, args.observable_only, args.cv,
             args.holdout_map, col, unit, window_max=not args.at_horizon, top_features=top,
             train_runs=args.train_runs, threshold=args.threshold if name == "pressure" else None,
-            importance=not args.no_importance, models=models)
+            importance=not args.no_importance, models=models, drop=[c.strip() for c in args.drop.split(",") if c.strip()])
     results.zip_up(args.out_dir)
 
 

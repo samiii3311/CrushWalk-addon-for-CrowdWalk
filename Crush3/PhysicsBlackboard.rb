@@ -6,6 +6,7 @@ class PhysicsBlackboard
   def initialize
     # Hit memory: { victim_id => { aggressor_id => { accel: 0.0, time: 0.0 } } }
     @hits = {}
+    @victim_of = {}  # SINGLELANE:onevictim -- aggressor_id => the agent it pushed last
     # Intent memory: { agent_id => accel }
     @intent = {} 
     @masses = {}
@@ -23,9 +24,11 @@ class PhysicsBlackboard
     tick_time = current_time.getAbsoluteTime()
     @hits[victim_id] ||= {}
     @hits[victim_id][aggressor_id] = { accel: accel, time: tick_time }
+    @victim_of[aggressor_id.to_s] = victim_id.to_s  # SINGLELANE:onevictim
   end
 
   def has_hit?(aggressor_id, victim_id, current_time)
+    return false unless @victim_of[aggressor_id.to_s] == victim_id.to_s  # SINGLELANE:onevictim
     hit_data = @hits.dig(victim_id, aggressor_id)
     return false if hit_data.nil?
     (current_time.getAbsoluteTime() - hit_data[:time]).abs <= current_time.getTickUnit()

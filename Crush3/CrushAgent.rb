@@ -57,6 +57,10 @@ class CrushAgent < RubyAgentBase
     # The same share is kept when a push from the front is passed back down the queue.
     # ponytail: uncited knob; calibrate against measured crowd forces if a source turns up.
     @pressure_transfer = props.getDouble("pressureTransfer", 1.0)
+    # SINGLELANE:squeeze -- room (m) at which a push is down to half: the distance a person moves back
+    # to regain balance after a push, 37.8 +- 12.1 cm (Muthukumar et al. 2025, Physiotherapy Quarterly
+    # 33(2), Table 1, push-and-release test, 60 young adults). A crowd push is stronger, so maybe longer.
+    @back_step = props.getDouble("backStepLength", 0.38)
     # SFM repulsion from people ahead also within contact range (see add_neighbor).
     # false = old behaviour (no braking from contacts), for comparison runs.
     @contact_braking = props.getBoolean("contactBraking", true)
@@ -220,6 +224,7 @@ class CrushAgent < RubyAgentBase
 
   def calcAccel(baseSpeed, previousSpeed, currentTime)
     _accel = @a0 * (baseSpeed - previousSpeed)
+    @prev_speed = previousSpeed  # SINGLELANE:squeeze
     # Drive = how hard this agent pushes forward (wants to walk faster than it can). Its net
     # accel is usually negative in a jam (the agent ahead brakes it), so that can't be the push.
     PhysicsBlackboard.instance.log_drive(getAgentId(), @my_mass * [_accel, 0.0].max)
@@ -274,6 +279,8 @@ class CrushAgent < RubyAgentBase
     virtualRoute = @javaAgent.routePlan.duplicate()
 
     startPos = virtualPlace.getAdvancingDistance()
+    @back_room = startPos  # SINGLELANE:squeeze -- free room behind, same rule as the step-back code
+    @front_gap = Float::INFINITY  # SINGLELANE:squeeze -- free room to the next agent ahead
 
     count = 0
     countOther = 0
@@ -327,6 +334,9 @@ class CrushAgent < RubyAgentBase
 
         break if agentPos > searchDist                 # Past our search boundary
         if agentPos < startPos                         # Behind us
+          if distanceSoFar == 0.0 && (!agent.isGhost() || agent.hasTag("crushed"))  # SINGLELANE:squeeze
+            @back_room = [@back_room, startPos - agentPos - @physicalSpace].min
+          end
           # People directly behind push us forward: keep them as physical contacts (dx < 0,
           # directly behind -> dy = 0). Current link only; crushed bodies behind don't push.
           # ponytail: agents behind on the previous link are not seen; add if merges need it.
@@ -348,6 +358,7 @@ class CrushAgent < RubyAgentBase
         # Exact distance from our actual agent to this target agent
         dx = distanceSoFar + (agentPos - startPos)
         dy = @widthUnit_SameLane * ((laneWidth - (count % laneWidth)) % laneWidth)
+        @front_gap = [@front_gap, dx - @physicalSpace].min  # SINGLELANE:squeeze
 
         add_neighbor(physicalAgent, socialAgent, { agent: agent, dx: dx, dy: dy })
       end
@@ -406,6 +417,7 @@ class CrushAgent < RubyAgentBase
 
     raw_net_force_x = 0.0
     raw_crush_pressure = 0.0
+    pressure_from_front = 0.0  # SINGLELANE:squeeze
     pressure_from_behind = 0.0
     total_body_drag = 0.0
 
@@ -465,10 +477,15 @@ class CrushAgent < RubyAgentBase
           # sideways offset already scales the push down by dx/distance.
           raw_net_force_x += @pressure_transfer * incoming_force_mag * dir_x
         end
-        raw_crush_pressure += incoming_force_mag
+        pressure_from_front += incoming_force_mag unless data[:behind]  # SINGLELANE:squeeze
       end
     end
 
+    room = [[(@back_room || 0.0), 0.0].max / @back_step, 1.0].min  # SINGLELANE:squeeze
+    walked = [(@prev_speed || 0.0) * currentTime.getTickUnit(), (@front_gap || 0.0)].min
+    room_ahead = [[walked, 0.0].max / @back_step, 1.0].min
+    raw_crush_pressure = [pressure_from_behind * (1.0 - 0.5 * room_ahead),
+                          pressure_from_front * (1.0 - 0.5 * room)].max
     @@dbg_max_raw_pressure = raw_crush_pressure if raw_crush_pressure > @@dbg_max_raw_pressure
     @last_raw_pressure = raw_crush_pressure
     # Only what came from behind is passed on to the agent in front. Passing on the total sent a

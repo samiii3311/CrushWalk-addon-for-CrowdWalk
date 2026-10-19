@@ -21,10 +21,13 @@ crowdwalk/
 │                        crush-prediction pipeline (make_maps.py, run_batch.py,
 │                        link_context.py, force_model.py, sweep.py;
 │                        guide in Crush3/README.md)
-├── patchCrowd.py        Patcher: string-anchored search/replace, generates
-│                        DynamicAgentLogger.java and LinkAggregateLogger.java,
-│                        builds with Gradle
-├── gpxToCsv.py          Converts a GPX trace to CrowdWalk-compatible CSV
+├── CrushTools/          Tools (not experiments)
+│   ├── crush/           patchCrowd.py: full patcher (loggers + crush Java
+│   │                    patches + Crush3 Ruby fixes, builds with Gradle);
+│   │                    repare.py: one-off method-anchored fixes
+│   ├── logger/          patchLogger.py: logger-only patcher (Java), its own
+│   │                    TelemetryHandler.rb, README.md in Japanese
+│   └── gpxToCsv.py      Converts a GPX trace to CrowdWalk-compatible CSV
 └── CrushArchive/        Earlier work, kept for reference. Nothing in Crush3
     │                    needs it.
     ├── Crush2/          Intermediate Ruby agent prototype and scenarios
@@ -63,12 +66,15 @@ JAVA_OPTS='-Dgroovy.source.encoding=UTF-8 -Dfile.encoding=UTF-8'
 Run the patcher from the `crowdwalk/` directory:
 
 ```
-python patchCrowd.py
+python CrushTools/crush/patchCrowd.py     # everything (CrushWalk)
+python CrushTools/logger/patchLogger.py   # only the agent and link loggers, on plain CrowdWalk
 ```
 
-It is idempotent: each patch is guarded by a marker string, so re-running it after it has already applied a change is a no-op. It finishes by running `./gradlew compileJava jar -x test -x check`, the same fast-rebuild command to use directly after any further hand-edit to the patched files.
+Add `--no-build` to either to patch without building. For the loggers alone, follow `CrushTools/logger/README.md` (Japanese): copy that folder's `TelemetryHandler.rb` into your own Ruby agent's load path and call `TelemetryHandler.update_telemetry(agent, data, time)` every tick.
 
-If you hand-edit a file under a `// === Custom: ... ===` block, you have desynced it from the patcher's anchors. Update the corresponding `search=`/`replace=` string in `patchCrowd.py` instead of leaving the `.java` file as the only copy of the change.
+Both are idempotent: each patch is guarded by a marker string, so re-running it after it has already applied a change is a no-op. It finishes by running `./gradlew compileJava jar -x test -x check`, the same fast-rebuild command to use directly after any further hand-edit to the patched files.
+
+If you hand-edit a file under a `// === Custom: ... ===` block, you have desynced it from the patcher's anchors. Update the corresponding `search=`/`replace=` string in `CrushTools/crush/patchCrowd.py` (or `CrushTools/logger/patchLogger.py` for the loggers) instead of leaving the `.java` file as the only copy of the change.
 
 ## Adding a custom telemetry field
 

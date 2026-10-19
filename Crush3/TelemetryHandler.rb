@@ -1,9 +1,8 @@
+# Two copies on purpose (user, 2026-10-20): this one for the CrushWalk runs, CrushTools/logger/
+# TelemetryHandler.rb for the logger-only patcher. Change both together.
 module TelemetryHandler
   def self.update_telemetry(agent, physics_data = {}, current_time = nil)
     return unless agent
-
-    agent_id = agent.getID().to_s
-    bb = PhysicsBlackboard.instance
 
     if agent.config.nil?
   agent.config = ItkTerm.newTerm()

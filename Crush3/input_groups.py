@@ -26,6 +26,9 @@ First look at the groups only (a few minutes for loading, no training, runs in t
     python3 input_groups.py crush.duckdb --back 30 --groups-only
 Then train (both models, or one model per part with --models; RF and XGB may use different --back):
     python3 input_groups.py crush.duckdb --back 30 --cut 0.2 --models RF_history --out-dir fm_groups_rf
+Then the groups that passed one at a time, dropped all at once (group numbers from groups.csv; trains
+all inputs, the set, and the set with --cut-one groups also cut to one member):
+    python3 input_groups.py crush.duckdb --back 30 --cut 0.2 --models RF_history --together 0,5,9 --cut-one 3 --out-dir fm_together_rf
     python3 input_groups.py --selftest
 
 <out-dir>/results.csv is rewritten after every training; groups.csv lists the groups.
@@ -88,7 +91,7 @@ def show_groups(rho, cut):
     print(f"  plus {sum(len(g) == 1 for g in groups(rho, cut))} inputs alone")
 
 
-def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None):
+def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, together=None, cut_one=()):
     df = baselines.add_holt(models_main.add_lags(df, backs))
     cols = inputs(df)
     rho = correlation(df, cols)
@@ -100,10 +103,17 @@ def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None):
                  ).to_csv(out_dir / "groups.csv", index=False)
 
     tests = [("all inputs", "", [])]  # (name, group number, inputs removed)
-    for i, g in enumerate(found):
-        tests.append((f"drop g{i}", i, g))
-        if len(g) > 1:
-            tests.append((f"keep one g{i}", i, [c for c in g if c != keep_one(rho, g)]))
+    if together:  # the groups that passed one at a time, dropped all at once (and optionally some cut to one too)
+        both = [c for i in together for c in found[i]]
+        tests.append(("drop together", "+".join(map(str, together)), both))
+        if cut_one:
+            trimmed = [c for i in cut_one for c in found[i] if c != keep_one(rho, found[i])]
+            tests.append(("drop together + cut", "+".join(map(str, together)) + " / " + "+".join(map(str, cut_one)), both + trimmed))
+    else:
+        for i, g in enumerate(found):
+            tests.append((f"drop g{i}", i, g))
+            if len(g) > 1:
+                tests.append((f"keep one g{i}", i, [c for c in g if c != keep_one(rho, g)]))
     ev = first_crossings(df, TARGET, threshold)
     models = (lambda columns=None: {n: models_main.new_models(columns)[n] for n in names}) if names else models_main.new_models
     parts, rows = {}, []
@@ -172,6 +182,16 @@ def selftest():
     # one-member noise group trains on the other 5 (the dropped columns are not re-added)
     assert "kept 6:" in log.getvalue() and "kept 5:" in log.getvalue()
     assert len(pd.read_csv(out / "results.csv")) == len(res)
+    # --together: all inputs, the set dropped at once, and the set plus a group cut to one
+    multi = int(found.group.value_counts().idxmax())
+    single = [int(i) for i in found.group.unique() if i != multi]
+    with contextlib.redirect_stdout(io.StringIO()):
+        both = sweep(df, [5], 5, Path(tempfile.mkdtemp()), 0.2, cv=3, threshold=500, names=["RF_history"],
+                     together=single, cut_one=[multi])
+    assert list(both.test) == ["all inputs", "drop together", "drop together + cut"], list(both.test)
+    assert set(both.removed.iloc[1].split(", ")) == set(found.input[found.group.isin(single)])
+    extra = (found.group == multi).sum() - 1  # cut to one: all but one member of that group go too
+    assert len(both.removed.iloc[2].split(", ")) == len(both.removed.iloc[1].split(", ")) + extra
     print("\nselftest ok")
 
 
@@ -188,6 +208,9 @@ def main():
     p.add_argument("--cv", type=int, default=5, metavar="K", help="K-fold cross-validation grouped by run (default 5)")
     p.add_argument("--threshold", type=float, default=1062.0, help="pressure (N) that counts as a crossing (default 1062)")
     p.add_argument("--models", help="only these models, comma-separated (default RF_history,XGB_history)")
+    p.add_argument("--together", help="group numbers (from groups.csv) to drop all at once, e.g. 0,5,9; "
+                                      "trains only all inputs and this set")
+    p.add_argument("--cut-one", default="", help="with --together: also cut these groups to one member, as a second row")
     p.add_argument("--out-dir", type=Path, default=Path("fm_groups"))
     background.stop_requested()
     background.add_args(p)
@@ -206,8 +229,9 @@ def main():
         p.error("--cut is needed for training; look at --groups-only first")
     args.out_dir = results.new_dir(args.out_dir)
     background.start(args, args.out_dir / "run.log")
+    nums = lambda s: [int(x) for x in s.split(",") if x.strip()]
     sweep(load_data(args.data), backs, args.window, args.out_dir, args.cut, args.cv, args.threshold,
-          args.models.split(",") if args.models else None)
+          args.models.split(",") if args.models else None, nums(args.together or ""), nums(args.cut_one))
     results.zip_up(args.out_dir)
 
 

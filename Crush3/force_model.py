@@ -107,6 +107,9 @@ def make_folds(df, test_frac=0.2, cv=None, holdout_map=None):
         if key not in df:
             sys.exit("--holdout-map needs map_id/map_file columns (load runs with link_context.py)")
         labels = df.groupby(key).map_file.first() if "map_file" in df else pd.Series(df[key].unique(), df[key].unique())
+        # seeds reuse file names (seed 1 and seed 2 both have tree_003/Map.xml): add the map_id so fold names stay unique
+        dup = labels.duplicated(keep=False)
+        labels = labels.where(~dup, labels + " [" + labels.index.astype(str).str[:8] + "]")
         if len(labels) < 2:
             sys.exit(f"--holdout-map needs runs on at least 2 maps; only have {list(labels)}")
         if holdout_map == "all":
@@ -329,6 +332,9 @@ def selftest():
     d2.loc[d2.scenario_id == "r0", "map_file"] = "copy/m1.xml"
     folds = make_folds(add_target(d2, 5), holdout_map="copy/m1.xml")
     assert len(folds) == 1 and "(4 runs)" in folds[0][0]
+    # two different maps with the same file name (other seed): two folds, two distinct names
+    folds = make_folds(add_target(df.assign(map_id=df.map_file, map_file="Map.xml"), 5), holdout_map="all")
+    assert len({name for name, _ in folds}) == 2
 
     # --holdout-map: test rows come only from the held-out map
     _, oof = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "map", models=plain, holdout_map="m2.xml")

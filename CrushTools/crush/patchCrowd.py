@@ -394,11 +394,20 @@ RUBY_FIXES = {
          "                          pressure_from_front * (1.0 - 0.5 * room)].max\n"
          "    @@dbg_max_raw_pressure = raw_crush_pressure if raw_crush_pressure > @@dbg_max_raw_pressure\n"),
     ],
+    # Fix 11 (2026-10-20): crush_agent! set speed 0 once, but calcSpeed kept running, so a crushed
+    # agent walked off as a ghost and left by the exit. The body is meant to stay as a roadblock
+    # (drag in calcPhysical) and count toward the end check (crushed + evacuated = all agents).
+    "stillbody": [
+        ("Crush3/CrushAgent.rb",
+         "    _speed = @javaAgent.obstructer.calcAffectedSpeed(_speed)\n",
+         "    _speed = @javaAgent.obstructer.calcAffectedSpeed(_speed)\n"
+         "    _speed = 0.0 if @is_crushed  # SINGLELANE:stillbody -- a crushed body stays where it fell\n"),
+    ],
 }
 
 
 def apply_ruby_fixes():
-    """Adds fixes 9 and 10 to Crush3/*.rb. Skips an edit that is already there; stops if an anchor is missing."""
+    """Adds fixes 9 to 11 to Crush3/*.rb. Skips an edit that is already there; stops if an anchor is missing."""
     for name, edits in RUBY_FIXES.items():
         for rel, find, repl in edits:
             path = REPO_DIR / rel

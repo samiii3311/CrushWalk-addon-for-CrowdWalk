@@ -133,6 +133,7 @@ class CrushAgent < RubyAgentBase
     end
 
     _speed = @javaAgent.obstructer.calcAffectedSpeed(_speed)
+    _speed = 0.0 if @is_crushed  # SINGLELANE:stillbody -- a crushed body stays where it fell
 
     telemetry_data = {
       pressure: @last_crush_pressure,

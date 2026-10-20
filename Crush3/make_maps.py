@@ -224,7 +224,8 @@ def make_gen(r, groups, agent_template):
     return '#{ "version" : 2}\n' + json.dumps(entries, indent=2) + "\n", params
 
 
-def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1, sim_minutes=60):
+def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1, sim_minutes=60, prop_set=None):
+    """prop_set: {key: value} written over the template prop.json in every run (e.g. physics knobs)."""
     out.mkdir(parents=True, exist_ok=True)
     gen_entry = read_gen(template / "gen.json")[0]
     agent_template = {k: v for k, v in gen_entry.items() if k not in ("total", "startPlace", "goal", "startTime", "duration")}
@@ -247,7 +248,7 @@ def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1
                 (d / "gen.json").write_text(gen_text, encoding="utf-8")
                 (d / "scenario.json").write_text(make_scenario(sim_minutes), encoding="utf-8")
                 logs = (Path(log_root) / run) if log_root else d
-                prop = json.loads(json.dumps(base_prop))
+                prop = {**json.loads(json.dumps(base_prop)), **(prop_set or {})}
                 # randseed: CrowdWalk's own RNG (agent placement etc.) defaults to 0 -> identical
                 # randomness every run unless set; give every run its own, reproducible from --seed
                 prop.update(map_file="../Map.xml", generation_file="gen.json", scenario_file="scenario.json",
@@ -285,8 +286,9 @@ def read_gen(path):
 
 def selftest():
     out = Path(tempfile.mkdtemp())
-    rows = generate(out, n=3, seed=7, template=HERE, log_root=None, runs_per_map=2)
+    rows = generate(out, n=3, seed=7, template=HERE, log_root=None, runs_per_map=2, prop_set={"pushResidual": 0.5})
     assert len(rows) == 30 and (out / "manifest.csv").exists()
+    assert read_json_c(out / rows[0]["run"] / "prop.json")["pushResidual"] == 0.5  # --set reaches every run
     for row in rows:
         d, map_xml = out / row["run"], out / row["map"] / "Map.xml"
         root = ET.parse(map_xml).getroot()

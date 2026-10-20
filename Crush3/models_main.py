@@ -19,6 +19,7 @@ history columns are in models_other.py.
     python3 models_main.py --selftest
 """
 
+import os
 import sys
 
 import pandas as pd
@@ -44,7 +45,10 @@ def random_forest():
 
 
 def xgboost():
-    return XGBRegressor(n_estimators=400, max_depth=6, learning_rate=0.05, subsample=0.8, random_state=0)
+    # CRUSH_XGB_DEVICE=cuda trains on the GPU (~65x faster on the Linux box, 2026-10-20). GPU and CPU
+    # results differ slightly, so keep one device for every result that gets compared.
+    return XGBRegressor(n_estimators=400, max_depth=6, learning_rate=0.05, subsample=0.8, random_state=0,
+                        device=os.environ.get("CRUSH_XGB_DEVICE", "cpu"))
 
 
 def new_models(columns=None):

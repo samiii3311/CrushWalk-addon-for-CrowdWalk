@@ -208,14 +208,15 @@ def tree(r):
                                     "bottleneck_width": we}
 
 
-def make_gen(r, groups, agent_template):
-    """One gen entry per spawn group. total = inflow surge, start offset = departure skew."""
+def make_gen(r, groups, agent_template, release_scale=1.0):
+    """One gen entry per spawn group. total = inflow surge, start offset = departure skew.
+    release_scale multiplies each group's release time (0.2 = 5x faster arrivals, same random draws)."""
     total = r.randint(300, 3000)
     shares = [r.random() + 0.2 for _ in groups]
     counts = [max(1, round(total * s / sum(shares))) for s in shares]
     entries, params = [], {"total_agents": sum(counts)}
     for (spawn, goal), n in zip(groups, counts):
-        skew, dur = r.randint(0, 600), round(r.uniform(5, 300), 1)
+        skew, dur = r.randint(0, 600), round(r.uniform(5, 300) * release_scale, 1)
         start = 18 * 3600 + 60 + skew  # scenario Initiates at 18:00:00
         entries.append({**agent_template, "total": n, "startPlace": spawn, "goal": goal,
                         "startTime": f"{start // 3600:02d}:{start % 3600 // 60:02d}:{start % 60:02d}",
@@ -224,7 +225,8 @@ def make_gen(r, groups, agent_template):
     return '#{ "version" : 2}\n' + json.dumps(entries, indent=2) + "\n", params
 
 
-def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1, sim_minutes=60, prop_set=None):
+def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1, sim_minutes=60, prop_set=None,
+             release_scale=1.0):
     """prop_set: {key: value} written over the template prop.json in every run (e.g. physics knobs)."""
     out.mkdir(parents=True, exist_ok=True)
     gen_entry = read_gen(template / "gen.json")[0]
@@ -242,7 +244,7 @@ def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1
             (out / name / "Map.xml").write_text(m.xml(), encoding="utf-8")
             for j in range(runs_per_map):  # same map, different crowd (gen.json) per run
                 run = f"{name}/run_{j}"
-                gen_text, gparams = make_gen(random.Random(f"{seed}-{run}"), groups, agent_template)
+                gen_text, gparams = make_gen(random.Random(f"{seed}-{run}"), groups, agent_template, release_scale)
                 d = out / run
                 d.mkdir(exist_ok=True)
                 (d / "gen.json").write_text(gen_text, encoding="utf-8")
@@ -289,6 +291,8 @@ def selftest():
     rows = generate(out, n=3, seed=7, template=HERE, log_root=None, runs_per_map=2, prop_set={"pushResidual": 0.5})
     assert len(rows) == 30 and (out / "manifest.csv").exists()
     assert read_json_c(out / rows[0]["run"] / "prop.json")["pushResidual"] == 0.5  # --set reaches every run
+    g = [make_gen(random.Random("x"), [("A", "G"), ("B", "G")], {}, s)[1] for s in (1.0, 0.2)]
+    assert g[0]["A_agents"] == g[1]["A_agents"] and abs(g[1]["A_duration_s"] - 0.2 * g[0]["A_duration_s"]) <= 0.1  # same crowd, 5x faster
     for row in rows:
         d, map_xml = out / row["run"], out / row["map"] / "Map.xml"
         root = ET.parse(map_xml).getroot()

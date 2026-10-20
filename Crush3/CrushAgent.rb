@@ -37,6 +37,9 @@ class CrushAgent < RubyAgentBase
     PhysicsBlackboard.instance.log_mass(getAgentId(), @my_mass)
 
     @body_drag_coefficient = props.getDouble("bodyDrag", 0.5 * @my_mass * 9.8)
+    # SINGLELANE:stepover -- speed cap (share of own free speed) while stepping over a body.
+    # Placeholder, no source yet: test its effect before relying on it.
+    @body_step_factor = props.getDouble("bodyStepFactor", 0.5)
 
     @crush_threshold = props.getDouble("crushThreshold", 1112.0)
     # Crushed only after the pressure stays above crushThreshold for crushDuration
@@ -134,6 +137,7 @@ class CrushAgent < RubyAgentBase
 
     _speed = @javaAgent.obstructer.calcAffectedSpeed(_speed)
     _speed = 0.0 if @is_crushed  # SINGLELANE:stillbody -- a crushed body stays where it fell
+    _speed = [_speed, @desired_empty_speed * @body_step_factor].min if @on_body && !@is_crushed  # SINGLELANE:stepover
 
     telemetry_data = {
       pressure: @last_crush_pressure,
@@ -264,6 +268,7 @@ class CrushAgent < RubyAgentBase
   #maybe should use a copy instead of the if-文
   #->using the copy and moving it causes added calculations to the sim. To reduce this only use it to move to the next link
   def search(currentTime)
+    @on_body = false  # SINGLELANE:stepover
     return [[], [], 0.0] if @javaAgent.isGhost()
 
     #first instance
@@ -308,6 +313,10 @@ class CrushAgent < RubyAgentBase
         break if agentPos > searchDist                    # Past our search boundary
         next if agentPos <= startPos - @physicalSpace      # Behind our search start
         next if agentPos <= insensitivePos                 # Too close in counterflow
+        if agent.hasTag("crushed")  # SINGLELANE:stepover -- a body is stepped over, not an obstacle
+          @on_body = true if distanceSoFar + (agentPos - startPos) <= @physicalSpace
+          next
+        end
 
         countOther += 1
 
@@ -353,6 +362,10 @@ class CrushAgent < RubyAgentBase
           next
         end
         next if agentPos == startPos && myTurnIsOver
+        if agent.hasTag("crushed")  # SINGLELANE:stepover -- a body is stepped over, not an obstacle
+          @on_body = true if distanceSoFar + (agentPos - startPos) <= @physicalSpace
+          next
+        end
 
         count += 1
 

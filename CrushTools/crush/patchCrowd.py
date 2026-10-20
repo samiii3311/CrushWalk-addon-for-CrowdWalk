@@ -403,6 +403,41 @@ RUBY_FIXES = {
          "    _speed = @javaAgent.obstructer.calcAffectedSpeed(_speed)\n"
          "    _speed = 0.0 if @is_crushed  # SINGLELANE:stillbody -- a crushed body stays where it fell\n"),
     ],
+    # Fix 12 (2026-10-20): search() listed a crushed body ahead like a standing person, so the
+    # social force braked everyone behind it to a stop and one body blocked the whole queue (with
+    # fix 11: 130-910 crushed per jam). User: people step over a body; it slows them, never stops
+    # them. A body is no longer a neighbour ahead; an agent within physicalSpace of one walks at
+    # most bodyStepFactor x its own free speed.
+    "stepover": [
+        ("Crush3/CrushAgent.rb",
+         '    @body_drag_coefficient = props.getDouble("bodyDrag", 0.5 * @my_mass * 9.8)\n',
+         '    @body_drag_coefficient = props.getDouble("bodyDrag", 0.5 * @my_mass * 9.8)\n'
+         '    # SINGLELANE:stepover -- speed cap (share of own free speed) while stepping over a body.\n'
+         '    # Placeholder, no source yet: test its effect before relying on it.\n'
+         '    @body_step_factor = props.getDouble("bodyStepFactor", 0.5)\n'),
+        ("Crush3/CrushAgent.rb",
+         "    return [[], [], 0.0] if @javaAgent.isGhost()\n",
+         "    @on_body = false  # SINGLELANE:stepover\n"
+         "    return [[], [], 0.0] if @javaAgent.isGhost()\n"),
+        ("Crush3/CrushAgent.rb",
+         "        next if agentPos <= insensitivePos                 # Too close in counterflow\n",
+         "        next if agentPos <= insensitivePos                 # Too close in counterflow\n"
+         "        if agent.hasTag(\"crushed\")  # SINGLELANE:stepover -- a body is stepped over, not an obstacle\n"
+         "          @on_body = true if distanceSoFar + (agentPos - startPos) <= @physicalSpace\n"
+         "          next\n"
+         "        end\n"),
+        ("Crush3/CrushAgent.rb",
+         "        next if agentPos == startPos && myTurnIsOver\n",
+         "        next if agentPos == startPos && myTurnIsOver\n"
+         "        if agent.hasTag(\"crushed\")  # SINGLELANE:stepover -- a body is stepped over, not an obstacle\n"
+         "          @on_body = true if distanceSoFar + (agentPos - startPos) <= @physicalSpace\n"
+         "          next\n"
+         "        end\n"),
+        ("Crush3/CrushAgent.rb",
+         "    _speed = 0.0 if @is_crushed  # SINGLELANE:stillbody -- a crushed body stays where it fell\n",
+         "    _speed = 0.0 if @is_crushed  # SINGLELANE:stillbody -- a crushed body stays where it fell\n"
+         "    _speed = [_speed, @desired_empty_speed * @body_step_factor].min if @on_body && !@is_crushed  # SINGLELANE:stepover\n"),
+    ],
 }
 
 

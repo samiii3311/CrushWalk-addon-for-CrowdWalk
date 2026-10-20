@@ -40,7 +40,9 @@ were found on 2026-10-08 and 2026-10-09 from the seed 1 batch.
 | 9 | Single file and two-way links still reached 4,800 to 23,000 N. A push from the front is kept for one tick (update order). When someone stepped into the gap ahead, the agent behind felt the newcomer's push and the old pusher's stale push: two pushes, and the doubled value travelled down the queue (traced: 1,080 to 3,000 to 6,600 N). | The blackboard remembers whom each agent pushed last; a push counts only for that agent (`PhysicsBlackboard.rb`). |
 | 10 | Pressure was the push from behind plus the push from the front. A body between two pushes feels the force passing through it once, not twice (user, 2026-10-19). In single file neither push is weakened by a sideways offset, so the sum reached about 2,900 N. | Pressure = the bigger of the two. The push from the front is weakened by the room behind (full when touching someone or at the link start, down to half with one step, `backStepLength` 0.7 m, of room: a free body pushed on one side is squeezed about F/2 on average); the push from behind likewise by the room ahead, counted as the smaller of the gap ahead and how far the agent walked last tick, so an agent held still at a node gets the full push. Body resistance is subtracted after, as before. |
 | 11 | Crushed agents walked away (2026-10-20). `crush_agent!` set the speed to 0 once, but `calcSpeed` kept running every tick, so the body sped up again as a ghost, walked out and was counted as evacuated. Found because none of the 24 runs cut off at 60 min had a crushed body left on the map. | A crushed agent's speed is held at 0 (`CrushAgent.rb`, patch set `stillbody`), so the body stays as a roadblock (body drag) and counts toward the end check (crushed + evacuated = all agents). Checked on the 12 seed 1 crossroads runs (180 min limit): bodies stay and runs end on their own at 17 to 42 min, but 130 to 910 people were crushed per crush run (fix 12). |
-| 12 | One body blocked a whole queue (2026-10-20). `search()` listed a crushed body ahead like a standing person, so the social force braked everyone behind it to a stop; the body drag only weakens pushes, so it never acted. With fix 11 the jam never drained and everyone held in it was crushed. | User: people step over a body; it slows them, never stops them. A body is no longer a neighbour ahead (same lane and counterflow); an agent within `physicalSpace` of one walks at most `bodyStepFactor` × its own free speed (0.5, placeholder without a source). The body-drag branch in `calcPhysical` is now unused. Not yet checked in a run. |
+| 12 | One body blocked a whole queue (2026-10-20). `search()` listed a crushed body ahead like a standing person, so the social force braked everyone behind it to a stop; the body drag only weakens pushes, so it never acted. With fix 11 the jam never drained and everyone held in it was crushed. | User: people step over a body; it slows them, never stops them. A body is no longer a neighbour ahead (same lane and counterflow); an agent within `physicalSpace` of one walks at most `bodyStepFactor` × its own free speed (0.5, placeholder without a source). The body-drag branch in `calcPhysical` is now unused. Checked on the 12 seed 1 crossroads runs: crushed counts barely changed (882, 130, 150, 475 ...), so bodies were not the cause of the cascade (limit 9). |
+| 13 | Everyone stuck in a jam pushed at full drive forever, so a whole queue sat above the crush line (limit 9). | The push that feeds the pressure chain (not the agent's own walking) is scaled by two factors. B: closeness to the end of the link, 1 there and down to `pushFarShare` (0.1) at `pushNearDistance` (10 m) and beyond, the curve of Üsten, Sieben, Chraibi & Seyfried 2026 (arXiv 2604.26858; their values, chosen by hand); pushing concentrates near the bottleneck in the Jülich entrance experiments (Üsten et al. 2023). A (user): fades the longer the agent stands touching the person ahead, `pushResidual` (0.2) + 0.8 × exp(−wait / `pushFadeTime` (60 s)). No measured value exists for any of the four numbers (literature search 2026-10-20). Not yet checked in a run. |
+| 14 | People could be crushed while they could still move forward (user rule). | The crush timer only counts while the agent is pinned: touching the person ahead or stopped (≤ 0.02 m/s). Not yet checked in a run. |
 
 What each fix was checked against:
 
@@ -157,6 +159,17 @@ is ours.
      two-way maps can come back after the Linux rerun confirms this on all runs.
    - Not checked yet: whether walkers going opposite ways touch at all in the contact logic
      (`MapLink` keeps `forwardLane` and `backwardLane` as separate lists).
+
+9. **A crush kills most of the packed queue at once.** Deep in a long jam the pressure sits near
+   the queue ceiling (about 1,800 to 1,970 N at `pressureTransfer` 0.97), above the 1,112 N line
+   for everyone there, so all who are held 240 s are crushed together: 130 to 900 per crush run
+   on the seed 1 crossroads maps (`CRUSHED |` lines in `sim.log`, 2026-10-20). Old runs (before
+   fixes 9 to 12) had the same counts within a few percent (875, 137, 139, 525, 250, 628, 173,
+   342), so this was always there and not caused by fixes 11 and 12; it went unseen because the
+   bodies walked away. Real crushes kill tens to a few hundred people out of far larger crowds.
+   The ML target (link pressure, events at 1,062 N) does not use the death count, and peaks
+   were unchanged by fixes 11 and 12, but death counts from the simulator should not be reported
+   as realistic.
 
 ## To work on eventually
 

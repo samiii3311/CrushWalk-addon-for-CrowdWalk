@@ -438,6 +438,44 @@ RUBY_FIXES = {
          "    _speed = 0.0 if @is_crushed  # SINGLELANE:stillbody -- a crushed body stays where it fell\n"
          "    _speed = [_speed, @desired_empty_speed * @body_step_factor].min if @on_body && !@is_crushed  # SINGLELANE:stepover\n"),
     ],
+    # Fix 13 (2026-10-20): every agent stuck in a jam pushed at full drive forever, so a whole queue
+    # sat above the crush line and a crush killed 130-900 people (PHYSICS_NOTES limit 9). The push
+    # (drive) that feeds the pressure chain is now scaled; the agent's own walking is unchanged.
+    # B: people push hard only near the bottleneck (Usten et al. 2023, Collective Dynamics), with
+    # the spatial-expectancy curve of Usten, Sieben, Chraibi, Seyfried 2026 (arXiv 2604.26858):
+    # 1 at the link end, falling to pushFarShare at pushNearDistance and beyond (their w = 10 m,
+    # floor 0.1, chosen by hand there too). A (user): the longer someone stands touching the person
+    # ahead, the weaker they push (nobody pushes full force to hurt), down to pushResidual.
+    # No measured values exist for any of these four numbers: test a range before relying on them.
+    "pushfade": [
+        ("Crush3/CrushAgent.rb",
+         '    @body_step_factor = props.getDouble("bodyStepFactor", 0.5)\n',
+         '    @body_step_factor = props.getDouble("bodyStepFactor", 0.5)\n'
+         '    # SINGLELANE:pushfade -- placeholders, see patchCrowd.py fix 13\n'
+         '    @push_near = props.getDouble("pushNearDistance", 10.0)\n'
+         '    @push_far = props.getDouble("pushFarShare", 0.1)\n'
+         '    @push_fade_time = props.getDouble("pushFadeTime", 60.0)\n'
+         '    @push_residual = props.getDouble("pushResidual", 0.2)\n'),
+        ("Crush3/CrushAgent.rb",
+         "    PhysicsBlackboard.instance.log_drive(getAgentId(), @my_mass * [_accel, 0.0].max)\n",
+         "    # SINGLELANE:pushfade -- B: near the end of the link (ponytail: link end stands in for the\n"
+         "    # bottleneck; use the queue front if jams form mid-link). A: fades while touching the one ahead.\n"
+         "    to_end = @javaAgent.currentPlace.getLinkLength() - @javaAgent.currentPlace.getAdvancingDistance()\n"
+         "    near = to_end < @push_near ? Math::E * Math.exp(1.0 / ((to_end / @push_near)**2 - 1.0)) : 0.0\n"
+         "    @wait_time = (@front_gap || Float::INFINITY) <= 0.0 ? (@wait_time || 0.0) + currentTime.getTickUnit() : 0.0\n"
+         "    fade = @push_residual + (1.0 - @push_residual) * Math.exp(-@wait_time / @push_fade_time)\n"
+         "    push_share = (@push_far + (1.0 - @push_far) * near) * fade\n"
+         "    PhysicsBlackboard.instance.log_drive(getAgentId(), push_share * @my_mass * [_accel, 0.0].max)\n"),
+    ],
+    # Fix 14 (2026-10-20, user): nobody is crushed while they can still move forward. The crush
+    # timer only runs while the agent is pinned: touching the person ahead, or stopped (speed at
+    # most 0.02 m/s, the queue_count line in the link logger).
+    "pinned": [
+        ("Crush3/CrushAgent.rb",
+         "    if final_crush_pressure > active_threshold\n",
+         "    pinned = (@front_gap || Float::INFINITY) <= 0.0 || (@prev_speed || 0.0) <= 0.02  # SINGLELANE:pinned\n"
+         "    if final_crush_pressure > active_threshold && pinned\n"),
+    ],
 }
 
 

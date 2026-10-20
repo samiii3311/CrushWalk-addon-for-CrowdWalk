@@ -40,6 +40,11 @@ class CrushAgent < RubyAgentBase
     # SINGLELANE:stepover -- speed cap (share of own free speed) while stepping over a body.
     # Placeholder, no source yet: test its effect before relying on it.
     @body_step_factor = props.getDouble("bodyStepFactor", 0.5)
+    # SINGLELANE:pushfade -- placeholders, see patchCrowd.py fix 13
+    @push_near = props.getDouble("pushNearDistance", 10.0)
+    @push_far = props.getDouble("pushFarShare", 0.1)
+    @push_fade_time = props.getDouble("pushFadeTime", 60.0)
+    @push_residual = props.getDouble("pushResidual", 0.2)
 
     @crush_threshold = props.getDouble("crushThreshold", 1112.0)
     # Crushed only after the pressure stays above crushThreshold for crushDuration
@@ -232,7 +237,14 @@ class CrushAgent < RubyAgentBase
     @prev_speed = previousSpeed  # SINGLELANE:squeeze
     # Drive = how hard this agent pushes forward (wants to walk faster than it can). Its net
     # accel is usually negative in a jam (the agent ahead brakes it), so that can't be the push.
-    PhysicsBlackboard.instance.log_drive(getAgentId(), @my_mass * [_accel, 0.0].max)
+    # SINGLELANE:pushfade -- B: near the end of the link (ponytail: link end stands in for the
+    # bottleneck; use the queue front if jams form mid-link). A: fades while touching the one ahead.
+    to_end = @javaAgent.currentPlace.getLinkLength() - @javaAgent.currentPlace.getAdvancingDistance()
+    near = to_end < @push_near ? Math::E * Math.exp(1.0 / ((to_end / @push_near)**2 - 1.0)) : 0.0
+    @wait_time = (@front_gap || Float::INFINITY) <= 0.0 ? (@wait_time || 0.0) + currentTime.getTickUnit() : 0.0
+    fade = @push_residual + (1.0 - @push_residual) * Math.exp(-@wait_time / @push_fade_time)
+    push_share = (@push_far + (1.0 - @push_far) * near) * fade
+    PhysicsBlackboard.instance.log_drive(getAgentId(), push_share * @my_mass * [_accel, 0.0].max)
 
     speed_model = @javaAgent.getSpeedModel().to_s
 
@@ -541,7 +553,8 @@ class CrushAgent < RubyAgentBase
     #check with the threshold to see if crushed -- must be sustained, resets when pressure drops
     @last_net_force = net_force_x
     active_threshold = @time_over_threshold > 0 ? @crush_threshold - @crush_margin : @crush_threshold
-    if final_crush_pressure > active_threshold
+    pinned = (@front_gap || Float::INFINITY) <= 0.0 || (@prev_speed || 0.0) <= 0.02  # SINGLELANE:pinned
+    if final_crush_pressure > active_threshold && pinned
       @time_over_threshold += currentTime.getTickUnit()
     else
       @time_over_threshold = 0.0

@@ -50,6 +50,8 @@ class CrushAgent < RubyAgentBase
       $stdout.puts "LANEWIDTH dWidth=#{Java::NodagumiAnanPJNetworkMapLink::MapLink.dWidth}"
     end
 
+    @sticky_pusher = props.getDouble("stickyPusher", 0.0) > 0.0  # SINGLELANE:stickypusher -- fix 23, 0 = old rule
+    @pusher_id = nil
     mass_term = ItkTerm.getArg(@fallback, "mass")
     @my_mass = mass_term ? mass_term.getDouble() : 60.0
     PhysicsBlackboard.instance.log_mass(getAgentId(), @my_mass)
@@ -340,6 +342,27 @@ class CrushAgent < RubyAgentBase
 
   #maybe should use a copy instead of the if-文
   #->using the copy and moving it causes added calculations to the sim. To reduce this only use it to move to the next link
+  # SINGLELANE:stickypusher -- fix 23: with narrow lanes the laneWidth nearest people behind are mostly
+  # people beside you in your own row (within ~0.3 m < one row, 0.36 m), so the push spread sideways and
+  # never built along the queue (peaks ~650 N on any push setting, 2026-10-22). The pusher is now the
+  # person directly behind in my pseudo-lane, list index - laneWidth (the lane model's index + laneWidth
+  # finds the person ahead), full share; kept while still within physicalSpace behind, because the list
+  # re-sorts every tick and a fresh pick each tick made pressure flicker between people (held <= 3 s).
+  # ponytail: a pusher can be kept by one person and newly picked by another, counting twice; claim
+  # pushers per tick if pressure looks doubled.
+  def sticky_pusher!(physicalAgent, behind, place, laneWidth)
+    cand = @pusher_id && behind.find { |e| e[:agent].getID() == @pusher_id }
+    unless cand
+      j = place.getIndexInLane(@javaAgent) - [laneWidth, 1].max
+      if j >= 0
+        back_id = place.getLane().get(j).getID()
+        cand = behind.find { |e| e[:agent].getID() == back_id }
+      end
+    end
+    @pusher_id = cand ? cand[:agent].getID() : nil
+    physicalAgent << cand.merge(share: 1.0) if cand
+  end
+
   def search(currentTime)
     @on_body = false  # SINGLELANE:stepover
     @body_near = false  # SINGLELANE:bodybreak
@@ -456,7 +479,11 @@ class CrushAgent < RubyAgentBase
       # Only the nearest row behind (laneWidth closest agents) pushes on us directly; rows further
       # back reach us through that row's passed-on pressure. Counting them directly as well would
       # count each person several times (rows are ~0.2 m apart in a jam) -> exponential blow-up.
-      physicalAgent.concat(behind.max_by([laneWidth, 1].max) { |b| b[:dx] })
+      if @sticky_pusher  # SINGLELANE:stickypusher
+        sticky_pusher!(physicalAgent, behind, virtualPlace, laneWidth) if distanceSoFar == 0.0
+      else
+        physicalAgent.concat(behind.max_by([laneWidth, 1].max) { |b| b[:dx] })
+      end
 
       remainingDist -= availableDistance
       break if remainingDist <= 0

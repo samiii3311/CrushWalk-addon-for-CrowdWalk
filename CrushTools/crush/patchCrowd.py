@@ -663,6 +663,46 @@ RUBY_FIXES = {
          "    @ps_now = @ps_slope > 0.0 ? @ps_min + @ps_slope * [previousSpeed, 0.0].max : @personalSpace  # SINGLELANE:speedspace\n"
          "    @ps_now = [@ps_now, @ps_max].min  # SINGLELANE:pscap\n"),
     ],
+    # Fix 23 (2026-10-22): sticky lane pusher (setting stickyPusher, 0 = old "laneWidth nearest behind"
+    # rule). See the comment block it adds to CrushAgent.rb.
+    "stickypusher": [
+        ("Crush3/CrushAgent.rb",
+         '    mass_term = ItkTerm.getArg(@fallback, "mass")\n',
+         '    @sticky_pusher = props.getDouble("stickyPusher", 0.0) > 0.0  # SINGLELANE:stickypusher -- fix 23, 0 = old rule\n'
+         '    @pusher_id = nil\n'
+         '    mass_term = ItkTerm.getArg(@fallback, "mass")\n'),
+        ("Crush3/CrushAgent.rb",
+         '  def search(currentTime)\n',
+         '  # SINGLELANE:stickypusher -- fix 23: with narrow lanes the laneWidth nearest people behind are mostly\n'
+         '  # people beside you in your own row (within ~0.3 m < one row, 0.36 m), so the push spread sideways and\n'
+         '  # never built along the queue (peaks ~650 N on any push setting, 2026-10-22). The pusher is now the\n'
+         "  # person directly behind in my pseudo-lane, list index - laneWidth (the lane model's index + laneWidth\n"
+         '  # finds the person ahead), full share; kept while still within physicalSpace behind, because the list\n'
+         '  # re-sorts every tick and a fresh pick each tick made pressure flicker between people (held <= 3 s).\n'
+         '  # ponytail: a pusher can be kept by one person and newly picked by another, counting twice; claim\n'
+         '  # pushers per tick if pressure looks doubled.\n'
+         '  def sticky_pusher!(physicalAgent, behind, place, laneWidth)\n'
+         '    cand = @pusher_id && behind.find { |e| e[:agent].getID() == @pusher_id }\n'
+         '    unless cand\n'
+         '      j = place.getIndexInLane(@javaAgent) - [laneWidth, 1].max\n'
+         '      if j >= 0\n'
+         '        back_id = place.getLane().get(j).getID()\n'
+         '        cand = behind.find { |e| e[:agent].getID() == back_id }\n'
+         '      end\n'
+         '    end\n'
+         '    @pusher_id = cand ? cand[:agent].getID() : nil\n'
+         '    physicalAgent << cand.merge(share: 1.0) if cand\n'
+         '  end\n'
+         '\n'
+         '  def search(currentTime)\n'),
+        ("Crush3/CrushAgent.rb",
+         '      physicalAgent.concat(behind.max_by([laneWidth, 1].max) { |b| b[:dx] })\n',
+         '      if @sticky_pusher  # SINGLELANE:stickypusher\n'
+         '        sticky_pusher!(physicalAgent, behind, virtualPlace, laneWidth) if distanceSoFar == 0.0\n'
+         '      else\n'
+         '        physicalAgent.concat(behind.max_by([laneWidth, 1].max) { |b| b[:dx] })\n'
+         '      end\n'),
+    ],
 }
 
 

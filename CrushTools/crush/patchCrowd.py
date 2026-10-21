@@ -565,6 +565,30 @@ RUBY_FIXES = {
          "      totalCrossingForce += -empty_speed * @a1 * Math.exp(@a2 * (@personalSpace - dist)) * (dx / dist)"
          "  # SINGLELANE:heading -- only the part along the walking direction brakes, as vanilla calcSocialForceToHeading\n"),
     ],
+    # Fix 19 (2026-10-21): with a fixed personalSpace (1.044 m) people stop at ~1.02 m spacing
+    # (d_stop = pS + ln(A1/A0)/A2), i.e. ~1 person/m^2 in 1 m lanes. Real walkers need space that
+    # grows with speed, d = 0.36 m + 1.06 s x v (Seyfried et al. 2005, J. Stat. Mech. P10002), so
+    # slow people close up. Settings personalSpaceMin / personalSpaceSlope; slope 0 (default) = old.
+    "speedspace": [
+        ("Crush3/CrushAgent.rb",
+         '    @a2 = props.getDouble("a2", 4.682)\n',
+         '    @a2 = props.getDouble("a2", 4.682)\n'
+         "    # SINGLELANE:speedspace -- fix 19: personal space grows with speed, d = personalSpaceMin + personalSpaceSlope x v\n"
+         "    # (Seyfried et al. 2005, J. Stat. Mech. P10002: 0.36 m + 1.06 s x v). Slope 0 = fixed personalSpace (old).\n"
+         '    @ps_min = props.getDouble("personalSpaceMin", @personalSpace)\n'
+         '    @ps_slope = props.getDouble("personalSpaceSlope", 0.0)\n'
+         "    @ps_now = @personalSpace\n"),
+        ("Crush3/CrushAgent.rb",
+         "    @prev_speed = previousSpeed  # SINGLELANE:squeeze\n",
+         "    @prev_speed = previousSpeed  # SINGLELANE:squeeze\n"
+         "    @ps_now = @ps_slope > 0.0 ? @ps_min + @ps_slope * [previousSpeed, 0.0].max : @personalSpace  # SINGLELANE:speedspace\n"),
+        # applied through the speed factor so fix 18's line stays as it is (re-running stays a no-op)
+        ("Crush3/CrushAgent.rb",
+         "    empty_speed = @desired_empty_speed\n",
+         "    empty_speed = @desired_empty_speed\n"
+         "    # SINGLELANE:speedspace -- x exp(a2 (ps_now - pS)) turns exp(a2 (pS - dist)) below into exp(a2 (ps_now - dist))\n"
+         "    empty_speed *= Math.exp(@a2 * (@ps_now - @personalSpace))\n"),
+    ],
 }
 
 

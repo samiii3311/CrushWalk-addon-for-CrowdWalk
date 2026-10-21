@@ -31,6 +31,11 @@ class CrushAgent < RubyAgentBase
     @a0 = props.getDouble("a0", 0.962)
     @a1 = props.getDouble("a1", 0.8497467021796484659)
     @a2 = props.getDouble("a2", 4.682)
+    # SINGLELANE:speedspace -- fix 19: personal space grows with speed, d = personalSpaceMin + personalSpaceSlope x v
+    # (Seyfried et al. 2005, J. Stat. Mech. P10002: 0.36 m + 1.06 s x v). Slope 0 = fixed personalSpace (old).
+    @ps_min = props.getDouble("personalSpaceMin", @personalSpace)
+    @ps_slope = props.getDouble("personalSpaceSlope", 0.0)
+    @ps_now = @personalSpace
 
     mass_term = ItkTerm.getArg(@fallback, "mass")
     @my_mass = mass_term ? mass_term.getDouble() : 60.0
@@ -243,6 +248,7 @@ class CrushAgent < RubyAgentBase
   def calcAccel(baseSpeed, previousSpeed, currentTime)
     _accel = @a0 * (baseSpeed - previousSpeed)
     @prev_speed = previousSpeed  # SINGLELANE:squeeze
+    @ps_now = @ps_slope > 0.0 ? @ps_min + @ps_slope * [previousSpeed, 0.0].max : @personalSpace  # SINGLELANE:speedspace
     # Drive = how hard this agent pushes forward (wants to walk faster than it can). Its net
     # accel is usually negative in a jam (the agent ahead brakes it), so that can't be the push.
     # SINGLELANE:pushfade -- B: near the end of the link (ponytail: link end stands in for the
@@ -610,6 +616,8 @@ class CrushAgent < RubyAgentBase
 
     # Individualized desired speed (getEmptySpeed() * this agent's speed_factor)
     empty_speed = @desired_empty_speed
+    # SINGLELANE:speedspace -- x exp(a2 (ps_now - pS)) turns exp(a2 (pS - dist)) below into exp(a2 (ps_now - dist))
+    empty_speed *= Math.exp(@a2 * (@ps_now - @personalSpace))
 
     socialAgent.each do |data|
       dx = data[:dx]

@@ -76,6 +76,7 @@ class CrushAgent < RubyAgentBase
     # to regain balance after a push, 37.8 +- 12.1 cm (Muthukumar et al. 2025, Physiotherapy Quarterly
     # 33(2), Table 1, push-and-release test, 60 young adults). A crowd push is stronger, so maybe longer.
     @back_step = props.getDouble("backStepLength", 0.38)
+    @wall_transfer = props.getDouble("wallPressureTransfer", @pressure_transfer)  # SINGLELANE:walls
     # SFM repulsion from people ahead also within contact range (see add_neighbor).
     # false = old behaviour (no braking from contacts), for comparison runs.
     @contact_braking = props.getBoolean("contactBraking", true)
@@ -443,6 +444,13 @@ class CrushAgent < RubyAgentBase
     end
   end
 
+  # SINGLELANE:walls -- share of a push passed on here: walls on 0/1/2 sides of the current link
+  def link_transfer
+    link = @javaAgent.currentPlace.getLink()
+    sides = link.hasTag("WALL2") ? 2 : (link.hasTag("WALL1") ? 1 : 0)
+    @pressure_transfer + sides * 0.5 * (@wall_transfer - @pressure_transfer)
+  end
+
   def calcPhysical(physicalAgent, currentTime)
     if physicalAgent.empty?
       @@dbg_physical_empty += 1
@@ -459,6 +467,7 @@ class CrushAgent < RubyAgentBase
     pressure_from_front = 0.0  # SINGLELANE:squeeze
     pressure_from_behind = 0.0
     total_body_drag = 0.0
+    transfer = link_transfer  # SINGLELANE:walls
 
     physicalAgent.each do |data|
       other_agent = data[:agent]
@@ -497,7 +506,7 @@ class CrushAgent < RubyAgentBase
         # ponytail: one-tick lag per person when the update order is back-to-front; fine at
         # 1 s ticks, revisit if tick length changes.
         push = PhysicsBlackboard.instance.get_drive(other_agent.getID()) +
-               @pressure_transfer * PhysicsBlackboard.instance.get_pressure(other_agent.getID())
+               transfer * PhysicsBlackboard.instance.get_pressure(other_agent.getID())  # SINGLELANE:walls
         incoming_force_mag = push * data[:share] * dir_x if dir_x > 0
       end
 
@@ -514,7 +523,7 @@ class CrushAgent < RubyAgentBase
           # dir_x = -1) passed it on in full and every agent added its own braking:
           # 7.6e5 N with 187 people on a 1.7 m link. Wider lanes hid this, because the
           # sideways offset already scales the push down by dx/distance.
-          raw_net_force_x += @pressure_transfer * incoming_force_mag * dir_x
+          raw_net_force_x += transfer * incoming_force_mag * dir_x  # SINGLELANE:walls
         end
         pressure_from_front += incoming_force_mag unless data[:behind]  # SINGLELANE:squeeze
       end
@@ -650,7 +659,7 @@ class CrushAgent < RubyAgentBase
     enable_ghost_mode
 
     # log
-    $stdout.puts "CRUSHED | id=#{@javaAgent.getID()} | x=#{pos.getX()} | y=#{pos.getY()}"
+    $stdout.puts "CRUSHED | id=#{@javaAgent.getID()} | x=#{pos.getX()} | y=#{pos.getY()} | link=#{getCurrentLinkId()}"  # SINGLELANE:walls
     $stdout.flush
 
     # store body

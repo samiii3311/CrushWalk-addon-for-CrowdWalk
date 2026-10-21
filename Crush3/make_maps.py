@@ -208,6 +208,15 @@ def tree(r):
                                     "bottleneck_width": we}
 
 
+def add_walls(m, r, share):
+    """Walls go on any link, quiet ones too, so a wall alone never means a crush. Own RNG and two draws
+    per link at every share: maps are unchanged at share 0, and a higher share only adds walls."""
+    for l in m.links:
+        u, side = r.random(), r.random()
+        if u < share:
+            l["tags"].append("WALL2" if side < 0.5 else "WALL1")
+
+
 def make_gen(r, groups, agent_template, release_scale=1.0):
     """One gen entry per spawn group. total = inflow surge, start offset = departure skew.
     release_scale multiplies each group's release time (0.2 = 5x faster arrivals, same random draws)."""
@@ -226,8 +235,9 @@ def make_gen(r, groups, agent_template, release_scale=1.0):
 
 
 def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1, sim_minutes=60, prop_set=None,
-             release_scale=1.0):
-    """prop_set: {key: value} written over the template prop.json in every run (e.g. physics knobs)."""
+             release_scale=1.0, wall_share=0.0):
+    """prop_set: {key: value} written over the template prop.json in every run (e.g. physics knobs).
+    wall_share: share of links with a wall, tagged WALL1 (one side) or WALL2 (both), half each."""
     out.mkdir(parents=True, exist_ok=True)
     gen_entry = read_gen(template / "gen.json")[0]
     agent_template = {k: v for k, v in gen_entry.items() if k not in ("total", "startPlace", "goal", "startTime", "duration")}
@@ -240,6 +250,8 @@ def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1
             name = f"{fam}_{i:03d}"
             r = random.Random(f"{seed}-{name}")
             m, groups, mparams = globals()[fam](r)
+            add_walls(m, random.Random(f"{seed}-{name}-walls"), wall_share)
+            mparams["walled_links"] = sum(any(t.startswith("WALL") for t in l["tags"]) for l in m.links)
             (out / name).mkdir(exist_ok=True)
             (out / name / "Map.xml").write_text(m.xml(), encoding="utf-8")
             for j in range(runs_per_map):  # same map, different crowd (gen.json) per run
@@ -348,6 +360,14 @@ def selftest():
     assert all(row[k] + row[k.replace("start_skew_s", "duration_s")] + 60 < 3600
                for row in rows for k in row if k.endswith("start_skew_s"))
     assert generate(Path(tempfile.mkdtemp()), 3, 7, HERE, None, runs_per_map=2)[4] == rows[4]  # same seed -> same
+    w = {s: Path(tempfile.mkdtemp()) for s in (0.3, 0.6, 1.0)}
+    wrows = {s: generate(d, 3, 7, HERE, None, runs_per_map=2, wall_share=s) for s, d in w.items()}
+    assert all(row["walled_links"] == 0 for row in rows) and all(
+        row["walled_links"] == len(parse_links(w[1.0] / row["map"] / "Map.xml")) for row in wrows[1.0])
+    for row in wrows[0.3]:
+        tags = {s: dict(zip(*parse_links(w[s] / row["map"] / "Map.xml")[["link_id", "link_tags"]].T.values))
+                for s in (0.3, 0.6)}
+        assert all(t in tags[0.6][k] for k, t in tags[0.3].items())  # walls at 0.3 are still there at 0.6
     # link logger only: a template prop.json without dynamic_logging still generates
     tpl = Path(tempfile.mkdtemp())
     (tpl / "gen.json").write_text((HERE / "gen.json").read_text(encoding="utf-8"), encoding="utf-8")
@@ -371,9 +391,10 @@ def main():
     p.add_argument("--out", type=Path, default=Path("generated_maps"))
     p.add_argument("--template", type=Path, default=HERE, help="folder with prop/gen/scenario.json + Ruby agents")
     p.add_argument("--log-root", default=None, help="where each run writes its CSVs (default: its own folder)")
+    p.add_argument("--wall-share", type=float, default=0.0, help="share of links with a wall (default 0 = open)")
     args = p.parse_args()
     rows = generate(args.out, args.n, args.seed, args.template.resolve(), args.log_root, args.families,
-                    args.runs_per_map, args.sim_minutes)
+                    args.runs_per_map, args.sim_minutes, wall_share=args.wall_share)
     print(f"wrote {len(rows)} runs ({args.n} maps x {len(args.families)} families x {args.runs_per_map}) to {args.out} (see {args.out / 'manifest.csv'})")
 
 

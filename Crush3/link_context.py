@@ -17,6 +17,7 @@ Per-record run info:
                      different maps -> different ids, even if both are named Map.xml.
                      force_model.py --holdout-map groups runs by this.
   length, width, area_m2, link_tags   this link's details from the map
+  walled_sides       0 open, 1 wall on one side (WALL1 tag), 2 on both (WALL2)
   prev_width_ratio   widest upstream width / own width (>1 = narrowing into this link)
 
 Direction: each link is an arc from->to. If the CSV has mean_link_direction
@@ -73,7 +74,8 @@ TABLE = "link_ticks"  # DuckDB table holding every run's records
 def parse_links(map_xml):
     rows = [{"link_id": l.get("id"), "from_node": l.get("from"), "to_node": l.get("to"),
              "length": float(l.get("length", 0.0)), "width": float(l.get("width", 1.0)),
-             "link_tags": ";".join(t.text or "" for t in l.iter("tag"))}
+             "link_tags": ";".join(t.text or "" for t in l.iter("tag")),
+             "walled_sides": 2 if l.find("tag[.='WALL2']") is not None else 1 if l.find("tag[.='WALL1']") is not None else 0}
             for l in ET.parse(map_xml).getroot().iter("Link")]
     return pd.DataFrame(rows)
 
@@ -151,7 +153,8 @@ def add_context(df, links):
     if unknown:
         print(f"[!] {len(unknown)} link_ids in the CSV are not in Map.xml, e.g. {sorted(unknown)[:3]}")
 
-    df = df.merge(links[["link_id", "length", "width", "link_tags"]], on="link_id", how="left")
+    links = links if "walled_sides" in links else links.assign(walled_sides=0)  # selftest tables have no walls
+    df = df.merge(links[["link_id", "length", "width", "link_tags", "walled_sides"]], on="link_id", how="left")
     df["area_m2"] = df.length * df.width
     n = df.agent_count
     # mean of +/-1 -> agent counts per direction (the logger rounds the mean to 3 decimals)

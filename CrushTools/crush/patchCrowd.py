@@ -520,6 +520,40 @@ RUBY_FIXES = {
          "    end\n"
          "    if @time_over_threshold >= @crush_duration\n"),
     ],
+    # Walls (draft, 2026-10-21): an open crowd leaks a push sideways, a wall stops the leak. A link
+    # tagged WALL1 (river/cliff on one side) or WALL2 (bridge, alley) passes on a bigger share of the
+    # push: pressureTransfer with no wall, wallPressureTransfer with two, halfway with one. The tags
+    # come from make_maps.py --wall-share. Unset wallPressureTransfer = no change. No source for it.
+    "walls": [
+        ("Crush3/CrushAgent.rb",
+         '    @back_step = props.getDouble("backStepLength", 0.38)\n',
+         '    @back_step = props.getDouble("backStepLength", 0.38)\n'
+         '    @wall_transfer = props.getDouble("wallPressureTransfer", @pressure_transfer)  # SINGLELANE:walls\n'),
+        ("Crush3/CrushAgent.rb",
+         "  def calcPhysical(physicalAgent, currentTime)\n",
+         "  # SINGLELANE:walls -- share of a push passed on here: walls on 0/1/2 sides of the current link\n"
+         "  def link_transfer\n"
+         "    link = @javaAgent.currentPlace.getLink()\n"
+         '    sides = link.hasTag("WALL2") ? 2 : (link.hasTag("WALL1") ? 1 : 0)\n'
+         "    @pressure_transfer + sides * 0.5 * (@wall_transfer - @pressure_transfer)\n"
+         "  end\n"
+         "\n"
+         "  def calcPhysical(physicalAgent, currentTime)\n"),
+        ("Crush3/CrushAgent.rb",
+         "    total_body_drag = 0.0\n",
+         "    total_body_drag = 0.0\n"
+         "    transfer = link_transfer  # SINGLELANE:walls\n"),
+        ("Crush3/CrushAgent.rb",
+         "               @pressure_transfer * PhysicsBlackboard.instance.get_pressure(other_agent.getID())\n",
+         "               transfer * PhysicsBlackboard.instance.get_pressure(other_agent.getID())  # SINGLELANE:walls\n"),
+        ("Crush3/CrushAgent.rb",
+         "          raw_net_force_x += @pressure_transfer * incoming_force_mag * dir_x\n",
+         "          raw_net_force_x += transfer * incoming_force_mag * dir_x  # SINGLELANE:walls\n"),
+        # the link a body fell on, so deaths can be counted on walled vs open links
+        ("Crush3/CrushAgent.rb",
+         '    $stdout.puts "CRUSHED | id=#{@javaAgent.getID()} | x=#{pos.getX()} | y=#{pos.getY()}"\n',
+         '    $stdout.puts "CRUSHED | id=#{@javaAgent.getID()} | x=#{pos.getX()} | y=#{pos.getY()} | link=#{getCurrentLinkId()}"  # SINGLELANE:walls\n'),
+    ],
 }
 
 

@@ -26,9 +26,19 @@
     },
     "crushThreshold":1112.0,  // N, Kroll et al. 2017
     "pressureTransfer":0.97,   // share of received pressure passed on per person (1 = full, A->B->C). Calibration choice, no source: sets the pressure ceiling of a queue, about 1,090 N at 0.95 (never crushes), about 2,000 N at 0.97. See PHYSICS_NOTES.md
+    "wallPressureTransfer":0.97, // walls (draft): share passed on along a link with walls on both sides (WALL2; WALL1 = halfway). = pressureTransfer means walls change nothing; not tuned, no source
     "contactBraking":true,    // SFM repulsion also from people ahead within contact range (false = old behaviour)
     "crushMargin":50.0,      // N; once over crushThreshold, keeps counting down to crushThreshold - crushMargin
     "crushDuration":240.0,   // seconds above crushThreshold in a row before crush (Kroll et al. 2017: 4-6 min)
+    "crushDurationMax":360.0, // fix 16: each person draws their own limit between crushDuration and this (Kroll et al. 2017: 4-6 min); = crushDuration turns it off
+    "bodyStepFactor":0.5,     // fix 12: speed share while stepping over a body (placeholder, no source)
+    "bodyAwareDistance":2.0,  // fix 17: m behind a fallen body where the push is broken; 0 = off (tuned 2026-10-21, no source)
+    "bodyPassShare":0.2,      // fix 17: share of the push passed on there; 1 = off (tuned 2026-10-21, no source)
+    "pushNearDistance":10.0,  // fix 13 B: m from the link end where pushing is strongest (Usten et al. 2026)
+    "pushFarShare":0.9,       // fix 13 B: push share beyond pushNearDistance; 1 = off (tuned 2026-10-21; code default 0.1)
+    "pushFadeTime":60.0,      // fix 13 A: s for the push to fade while touching the person ahead (placeholder)
+    "pushResidual":0.9,       // fix 13 A: push share left after fading; 1 = off (tuned 2026-10-21; code default 0.2)
+    "pushRecoverRate":1.0,    // fix 15: how fast the fade recovers after a gap opens (x build-up rate); huge = instant reset
     "simulation_step_time": 1,
     "show_background_map": true,
     "agent_size": 5.0,

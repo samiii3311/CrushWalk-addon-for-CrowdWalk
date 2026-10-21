@@ -213,7 +213,8 @@ def run_batches(args, sim_cmd):
             tag = f"seed_{seed}"
             rows = generate(out / tag, args.n, seed, HERE, Path(args.log_root) / tag if args.log_root else None,
                             args.families, args.runs_per_map, args.sim_minutes,
-                            {k: float(v) for k, v in (s.split("=", 1) for s in args.set)}, args.release_scale)
+                            {k: float(v) for k, v in (s.split("=", 1) for s in args.set)}, args.release_scale,
+                            args.wall_share)
             todo = [r for r in rows if f"{tag}/{r['run']}" not in done]
             if args.runs:
                 todo = todo[:args.runs - loaded]  # only launch what is still needed
@@ -279,7 +280,7 @@ def selftest():
     args = argparse.Namespace(out=str(tmp / "maps"), log_root=str(tmp / "logs"), db=str(tmp / "t.duckdb"),
                               start_seed=5, batches=2, runs=None, n=1, runs_per_map=2, sim_minutes=60, families=ALL_FAMILIES, jobs=2,
                               timeout=60, crowdwalk=tmp, drop_agent_log=False,
-                              max_fail_streak=10, progress_every=1, set=[], release_scale=1.0)
+                              max_fail_streak=10, progress_every=1, set=[], release_scale=1.0, wall_share=0.0)
     run_batches(args, sim)
     import duckdb
     with duckdb.connect(args.db, read_only=True) as con:
@@ -355,6 +356,9 @@ def main():
                    help="override a numeric prop.json value in every run, e.g. --set pushResidual=0.5 (repeatable)")
     p.add_argument("--release-scale", type=float, default=1.0,
                    help="multiply each spawn group's release time, e.g. 0.2 = arrivals 5x faster (same crowds otherwise)")
+    p.add_argument("--wall-share", type=float, default=0.0,
+                   help="share of links with a wall (WALL1/WALL2 tag, half each; default 0 = open crowd). "
+                        "Needs wallPressureTransfer in prop.json to change the physics")
     p.add_argument("--out", default=OUT_DIR, help="where scenario folders + runner_log.csv go")
     p.add_argument("--log-root", default=LOG_ROOT, help="where the simulator writes CSVs (default: each run folder)")
     p.add_argument("--db", default=DB_PATH)

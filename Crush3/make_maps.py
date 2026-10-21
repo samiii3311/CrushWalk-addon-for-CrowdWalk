@@ -280,7 +280,7 @@ def make_gen(r, groups, agent_template, release_scale=1.0, spawn_width=None, max
             params[f"{spawn}_drawn_duration_s"] = dur
             dur = max(dur, round(n / (max_flow * spawn_width[spawn]), 1))
         start = 18 * 3600 + 60 + skew  # scenario Initiates at 18:00:00
-        entries.append({**agent_template, "total": n, "startPlace": spawn, "goal": goal,
+        entries.append({**agent_template, "total": n, "startPlace": spawn + "_in", "goal": goal,
                         "startTime": f"{start // 3600:02d}:{start % 3600 // 60:02d}:{start % 60:02d}",
                         "duration": dur})
         params[f"{spawn}_agents"], params[f"{spawn}_start_skew_s"], params[f"{spawn}_duration_s"] = n, skew, dur
@@ -316,11 +316,17 @@ def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1
                 if fam == "crossroads":
                     mparams["wall_square_m"] = round(sq_len, 3)
             mparams["wall_kind"] = "bottleneck" if bneck else "random" if walled and wall_share > 0 else "none"
-            spawn_width = {}
+            # Groups start on the outer end node of their spawn links (tag Spawn.._in), not on the links:
+            # a link start drops each new person at a random point along the link (AgentFactoryFromLink
+            # -> placeAtRandomPosition), inside the crowd already there, and every crush was on a spawn
+            # link even with the release cap (2026-10-21). A node start puts them at distance 0 on the
+            # link, so they walk in. Links keep their Spawn tag for analysis.
+            spawn_width, by_id = {}, {nd["id"]: nd for nd in m.nodes}
             for l in m.links:
                 for t in l["tags"]:
                     if t.startswith("Spawn"):
                         spawn_width[t] = spawn_width.get(t, 0) + l["width"]
+                        by_id[l["from"]]["tags"].append(t + "_in")
             mparams["walled_links"] = sum(any(t.startswith("WALL") for t in l["tags"]) for l in m.links)
             (out / name).mkdir(exist_ok=True)
             (out / name / "Map.xml").write_text(m.xml(), encoding="utf-8")
@@ -394,7 +400,8 @@ def selftest():
                                   float(a.get("y")) - float(b.get("y"))) - l.length) < 1e-6
             for n in (a, b):
                 assert l.link_id in [e.get("id") for e in n.iter("link")]
-        # every gen entry's spawn tag is on a link, its goal tag on a node, and the goal is reachable
+        # every gen entry starts on a node (not a link) that is the outer end of a link with its spawn
+        # tag and has no other link; its goal tag is on a node, and the goal is reachable
         gen = read_gen(d / "gen.json")
         node_tags = {t.text: n.get("id") for n in nodes.values() for t in n.iter("tag")}
         adj = {}
@@ -402,8 +409,11 @@ def selftest():
             adj.setdefault(l.from_node, set()).add(l.to_node)
             adj.setdefault(l.to_node, set()).add(l.from_node)
         for g in gen:
-            spawn = links[links.link_tags.str.split(";").apply(lambda ts: g["startPlace"] in ts)]
-            assert len(spawn) and g["goal"] in node_tags, (row["run"], g)
+            assert g["startPlace"].endswith("_in") and not links.link_tags.str.contains(g["startPlace"]).any()
+            spawn = links[links.link_tags.str.split(";").apply(lambda ts: g["startPlace"][:-3] in ts)]
+            starts = {n.get("id") for n in nodes.values() if g["startPlace"] in [t.text for t in n.iter("tag")]}
+            assert len(spawn) and starts == set(spawn.from_node) and all(len(adj[s]) == 1 for s in starts), (row["run"], g)
+            assert g["goal"] in node_tags, (row["run"], g)
             seen, todo = set(), [spawn.iloc[0].to_node]
             while todo:
                 x = todo.pop()

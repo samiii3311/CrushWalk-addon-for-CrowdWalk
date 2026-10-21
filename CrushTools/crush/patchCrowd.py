@@ -589,6 +589,51 @@ RUBY_FIXES = {
          "    # SINGLELANE:speedspace -- x exp(a2 (ps_now - pS)) turns exp(a2 (pS - dist)) below into exp(a2 (ps_now - dist))\n"
          "    empty_speed *= Math.exp(@a2 * (@ps_now - @personalSpace))\n"),
     ],
+    # Fix 20 (2026-10-21): people placed on a spawn node (position 0) have no contacts and stepped
+    # onto the link without checking for room: 22 people/m^2 in the first 2 m, all the pressure over
+    # the crush line and every recent entrance death. Entry gate, setting entryGateLength (0 = off).
+    "entrygate": [
+        ("Crush3/CrushAgent.rb",
+         "    @ps_now = @personalSpace\n",
+         "    @ps_now = @personalSpace\n"
+         '    @entry_gate = props.getDouble("entryGateLength", 0.0)  # SINGLELANE:entrygate -- fix 20, 0 = off\n'),
+        ("Crush3/CrushAgent.rb",
+         "    _speed = [_speed, @desired_empty_speed * @body_step_factor].min if @on_body && !@is_crushed  # SINGLELANE:stepover\n",
+         "    _speed = [_speed, @desired_empty_speed * @body_step_factor].min if @on_body && !@is_crushed  # SINGLELANE:stepover\n"
+         "    _speed = 0.0 if @entry_gate > 0.0 && entry_blocked?(currentTime)  # SINGLELANE:entrygate\n"),
+        ("Crush3/CrushAgent.rb",
+         "  def calcSpeedBody(previousSpeed, currentTime, speed_factor)\n",
+         "  # SINGLELANE:entrygate -- fix 20: people placed on a spawn node (position 0) have no contacts and\n"
+         "  # stepped onto the link without room: 22 people/m² in its first 2 m, all the over-threshold\n"
+         "  # pressure and every recent entrance death (2026-10-21). Now someone waiting at 0 enters only\n"
+         "  # while the first entryGateLength m hold fewer than lanes x entryGateLength / personalSpaceMin\n"
+         "  # people (one per lane every personalSpaceMin m); the rest wait off the map. Slots are counted\n"
+         "  # once per link per tick, so a free gap is not filled by everyone waiting at once.\n"
+         "  @@gate = {}\n"
+         "  def entry_blocked?(currentTime)\n"
+         "    place = @javaAgent.currentPlace\n"
+         "    return false if place.getAdvancingDistance() > 0.0\n"
+         "    link = place.getLink()\n"
+         '    return false unless link.hasSubTag("Spawn")\n'
+         "    tick = currentTime.getRelativeTime().to_i\n"
+         "    key = link.ID\n"
+         "    slot = @@gate[key]\n"
+         "    if slot.nil? || slot[0] != tick\n"
+         "      inside = 0\n"
+         "      place.getLane().each do |agent|\n"
+         "        pos = agent.currentPlace.getAdvancingDistance()\n"
+         "        break if pos >= @entry_gate\n"
+         "        inside += 1 if pos > 0.0\n"
+         "      end\n"
+         "      slot = @@gate[key] = [tick, place.getLaneWidth() * @entry_gate / @ps_min - inside]\n"
+         "    end\n"
+         "    return true if slot[1] < 1.0\n"
+         "    slot[1] -= 1.0\n"
+         "    false\n"
+         "  end\n"
+         "\n"
+         "  def calcSpeedBody(previousSpeed, currentTime, speed_factor)\n"),
+    ],
 }
 
 

@@ -36,6 +36,7 @@ class CrushAgent < RubyAgentBase
     @ps_min = props.getDouble("personalSpaceMin", @personalSpace)
     @ps_slope = props.getDouble("personalSpaceSlope", 0.0)
     @ps_now = @personalSpace
+    @entry_gate = props.getDouble("entryGateLength", 0.0)  # SINGLELANE:entrygate -- fix 20, 0 = off
 
     mass_term = ItkTerm.getArg(@fallback, "mass")
     @my_mass = mass_term ? mass_term.getDouble() : 60.0
@@ -156,6 +157,7 @@ class CrushAgent < RubyAgentBase
     _speed = @javaAgent.obstructer.calcAffectedSpeed(_speed)
     _speed = 0.0 if @is_crushed  # SINGLELANE:stillbody -- a crushed body stays where it fell
     _speed = [_speed, @desired_empty_speed * @body_step_factor].min if @on_body && !@is_crushed  # SINGLELANE:stepover
+    _speed = 0.0 if @entry_gate > 0.0 && entry_blocked?(currentTime)  # SINGLELANE:entrygate
 
     telemetry_data = {
       pressure: @last_crush_pressure,
@@ -173,6 +175,35 @@ class CrushAgent < RubyAgentBase
     TelemetryHandler.update_telemetry(@javaAgent, telemetry_data, currentTime)
 
     return _speed
+  end
+
+  # SINGLELANE:entrygate -- fix 20: people placed on a spawn node (position 0) have no contacts and
+  # stepped onto the link without room: 22 people/m² in its first 2 m, all the over-threshold
+  # pressure and every recent entrance death (2026-10-21). Now someone waiting at 0 enters only
+  # while the first entryGateLength m hold fewer than lanes x entryGateLength / personalSpaceMin
+  # people (one per lane every personalSpaceMin m); the rest wait off the map. Slots are counted
+  # once per link per tick, so a free gap is not filled by everyone waiting at once.
+  @@gate = {}
+  def entry_blocked?(currentTime)
+    place = @javaAgent.currentPlace
+    return false if place.getAdvancingDistance() > 0.0
+    link = place.getLink()
+    return false unless link.hasSubTag("Spawn")
+    tick = currentTime.getRelativeTime().to_i
+    key = link.ID
+    slot = @@gate[key]
+    if slot.nil? || slot[0] != tick
+      inside = 0
+      place.getLane().each do |agent|
+        pos = agent.currentPlace.getAdvancingDistance()
+        break if pos >= @entry_gate
+        inside += 1 if pos > 0.0
+      end
+      slot = @@gate[key] = [tick, place.getLaneWidth() * @entry_gate / @ps_min - inside]
+    end
+    return true if slot[1] < 1.0
+    slot[1] -= 1.0
+    false
   end
 
   def calcSpeedBody(previousSpeed, currentTime, speed_factor)

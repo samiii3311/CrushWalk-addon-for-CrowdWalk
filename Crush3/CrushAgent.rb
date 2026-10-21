@@ -631,7 +631,7 @@ class CrushAgent < RubyAgentBase
       # ---------------------------------------------------------
       # This matches the Java core logic. It always yields a negative
       # value, pushing the agent's acceleration backwards (deceleration).
-      totalCrossingForce += -empty_speed * @a1 * Math.exp(@a2 * (@personalSpace - dist))
+      totalCrossingForce += -empty_speed * @a1 * Math.exp(@a2 * (@personalSpace - dist)) * (dx / dist)  # SINGLELANE:heading -- only the part along the walking direction brakes, as vanilla calcSocialForceToHeading
 
       # ---------------------------------------------------------
       # 3. LOWER BOUND OPTIMIZATION (Early Exit)

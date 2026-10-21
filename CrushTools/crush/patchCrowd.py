@@ -554,6 +554,17 @@ RUBY_FIXES = {
          '    $stdout.puts "CRUSHED | id=#{@javaAgent.getID()} | x=#{pos.getX()} | y=#{pos.getY()}"\n',
          '    $stdout.puts "CRUSHED | id=#{@javaAgent.getID()} | x=#{pos.getX()} | y=#{pos.getY()} | link=#{getCurrentLinkId()}"  # SINGLELANE:walls\n'),
     ],
+    # Fix 18 (2026-10-21): calcSocial counted each person's repulsion in full, also from people
+    # beside you (large dy, small dx). Vanilla (WalkAgent.calcSocialForceToHeading) scales it by
+    # dx / dist, so only the part along the walking direction brakes. Without it people stood
+    # still at ~1 person/m^2 (braking -1 to -3 m/s^2 vs ~1 m/s^2 drive), every link passed only
+    # ~1-1.5 people/s per 7 m and queues backed up to the entrance (PHYSICS_TUNING_LOG.md).
+    "heading": [
+        ("Crush3/CrushAgent.rb",
+         "      totalCrossingForce += -empty_speed * @a1 * Math.exp(@a2 * (@personalSpace - dist))\n",
+         "      totalCrossingForce += -empty_speed * @a1 * Math.exp(@a2 * (@personalSpace - dist)) * (dx / dist)"
+         "  # SINGLELANE:heading -- only the part along the walking direction brakes, as vanilla calcSocialForceToHeading\n"),
+    ],
 }
 
 

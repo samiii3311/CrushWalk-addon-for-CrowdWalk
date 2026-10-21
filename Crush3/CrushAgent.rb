@@ -37,6 +37,9 @@ class CrushAgent < RubyAgentBase
     PhysicsBlackboard.instance.log_mass(getAgentId(), @my_mass)
 
     @body_drag_coefficient = props.getDouble("bodyDrag", 0.5 * @my_mass * 9.8)
+    # SINGLELANE:bodybreak -- fix 17: within bodyAwareDistance behind a body, push and pass on only bodyPassShare
+    @body_aware = props.getDouble("bodyAwareDistance", 0.0)
+    @body_pass = props.getDouble("bodyPassShare", 1.0)
     # SINGLELANE:stepover -- speed cap (share of own free speed) while stepping over a body.
     # Placeholder, no source yet: test its effect before relying on it.
     @body_step_factor = props.getDouble("bodyStepFactor", 0.5)
@@ -45,11 +48,15 @@ class CrushAgent < RubyAgentBase
     @push_far = props.getDouble("pushFarShare", 0.1)
     @push_fade_time = props.getDouble("pushFadeTime", 60.0)
     @push_residual = props.getDouble("pushResidual", 0.2)
+    @push_recover = props.getDouble("pushRecoverRate", 1.0)  # SINGLELANE:recover -- fix 15, placeholder
 
     @crush_threshold = props.getDouble("crushThreshold", 1112.0)
     # Crushed only after the pressure stays above crushThreshold for crushDuration
     # seconds in a row. Kroll et al. 2017: 1112 N can be fatal when held 4-6 min.
     @crush_duration = props.getDouble("crushDuration", 240.0)
+    # SINGLELANE:tolerance -- own limit up to crushDurationMax, drawn on first use (no agent ID yet here)
+    @crush_spread = props.getDouble("crushDurationMax", @crush_duration) - @crush_duration
+    @crush_seed = props.getDouble("randseed", 0.0)
     # Hysteresis: once the timer has started, dips down to crushThreshold - crushMargin
     # still count as sustained, so small force jitter doesn't reset it.
     @crush_margin = props.getDouble("crushMargin", 50.0)
@@ -241,9 +248,12 @@ class CrushAgent < RubyAgentBase
     # bottleneck; use the queue front if jams form mid-link). A: fades while touching the one ahead.
     to_end = @javaAgent.currentPlace.getLinkLength() - @javaAgent.currentPlace.getAdvancingDistance()
     near = to_end < @push_near ? Math::E * Math.exp(1.0 / ((to_end / @push_near)**2 - 1.0)) : 0.0
-    @wait_time = (@front_gap || Float::INFINITY) <= 0.0 ? (@wait_time || 0.0) + currentTime.getTickUnit() : 0.0
+    # SINGLELANE:recover -- the wait runs back down instead of resetting on the first gap (fix 15)
+    dt = currentTime.getTickUnit()
+    @wait_time = (@front_gap || Float::INFINITY) <= 0.0 ? (@wait_time || 0.0) + dt : [(@wait_time || 0.0) - @push_recover * dt, 0.0].max
     fade = @push_residual + (1.0 - @push_residual) * Math.exp(-@wait_time / @push_fade_time)
     push_share = (@push_far + (1.0 - @push_far) * near) * fade
+    push_share *= @body_pass if @body_near  # SINGLELANE:bodybreak
     PhysicsBlackboard.instance.log_drive(getAgentId(), push_share * @my_mass * [_accel, 0.0].max)
 
     speed_model = @javaAgent.getSpeedModel().to_s
@@ -281,6 +291,7 @@ class CrushAgent < RubyAgentBase
   #->using the copy and moving it causes added calculations to the sim. To reduce this only use it to move to the next link
   def search(currentTime)
     @on_body = false  # SINGLELANE:stepover
+    @body_near = false  # SINGLELANE:bodybreak
     return [[], [], 0.0] if @javaAgent.isGhost()
 
     #first instance
@@ -327,6 +338,7 @@ class CrushAgent < RubyAgentBase
         next if agentPos <= insensitivePos                 # Too close in counterflow
         if agent.hasTag("crushed")  # SINGLELANE:stepover -- a body is stepped over, not an obstacle
           @on_body = true if distanceSoFar + (agentPos - startPos) <= @physicalSpace
+          @body_near = true if distanceSoFar + (agentPos - startPos) <= @body_aware  # SINGLELANE:bodybreak
           next
         end
 
@@ -376,6 +388,7 @@ class CrushAgent < RubyAgentBase
         next if agentPos == startPos && myTurnIsOver
         if agent.hasTag("crushed")  # SINGLELANE:stepover -- a body is stepped over, not an obstacle
           @on_body = true if distanceSoFar + (agentPos - startPos) <= @physicalSpace
+          @body_near = true if distanceSoFar + (agentPos - startPos) <= @body_aware  # SINGLELANE:bodybreak
           next
         end
 
@@ -516,7 +529,8 @@ class CrushAgent < RubyAgentBase
     @last_raw_pressure = raw_crush_pressure
     # Only what came from behind is passed on to the agent in front. Passing on the total sent a
     # push from the front straight back to the front, where the forward chain multiplied it again.
-    PhysicsBlackboard.instance.log_pressure(getAgentId(), pressure_from_behind)
+    # SINGLELANE:bodybreak -- right behind a body, only bodyPassShare of the push from behind goes on
+    PhysicsBlackboard.instance.log_pressure(getAgentId(), pressure_from_behind * (@body_near ? @body_pass : 1.0))
 
     # ---------------------------------------------------------
     # 3. CRUSH PRESSURE — uses the HIGH threshold (injury-relevant)
@@ -558,6 +572,10 @@ class CrushAgent < RubyAgentBase
       @time_over_threshold += currentTime.getTickUnit()
     else
       @time_over_threshold = 0.0
+    end
+    if @crush_spread  # SINGLELANE:tolerance -- the ID is set by now (in initialize it was not: all agents drew the same)
+      @crush_duration += @crush_spread * Random.new(Digest::MD5.hexdigest("#{@crush_seed}-#{getAgentId()}").to_i(16)).rand
+      @crush_spread = nil
     end
     if @time_over_threshold >= @crush_duration
       crush_agent!

@@ -412,18 +412,23 @@ RUBY_FIXES = {
         ("Crush3/CrushAgent.rb",
          '    @body_drag_coefficient = props.getDouble("bodyDrag", 0.5 * @my_mass * 9.8)\n',
          '    @body_drag_coefficient = props.getDouble("bodyDrag", 0.5 * @my_mass * 9.8)\n'
+         '    # SINGLELANE:bodybreak -- fix 17: within bodyAwareDistance behind a body, push and pass on only bodyPassShare\n'
+         '    @body_aware = props.getDouble("bodyAwareDistance", 0.0)\n'
+         '    @body_pass = props.getDouble("bodyPassShare", 1.0)\n'
          '    # SINGLELANE:stepover -- speed cap (share of own free speed) while stepping over a body.\n'
          '    # Placeholder, no source yet: test its effect before relying on it.\n'
          '    @body_step_factor = props.getDouble("bodyStepFactor", 0.5)\n'),
         ("Crush3/CrushAgent.rb",
          "    return [[], [], 0.0] if @javaAgent.isGhost()\n",
          "    @on_body = false  # SINGLELANE:stepover\n"
+         "    @body_near = false  # SINGLELANE:bodybreak\n"
          "    return [[], [], 0.0] if @javaAgent.isGhost()\n"),
         ("Crush3/CrushAgent.rb",
          "        next if agentPos <= insensitivePos                 # Too close in counterflow\n",
          "        next if agentPos <= insensitivePos                 # Too close in counterflow\n"
          "        if agent.hasTag(\"crushed\")  # SINGLELANE:stepover -- a body is stepped over, not an obstacle\n"
          "          @on_body = true if distanceSoFar + (agentPos - startPos) <= @physicalSpace\n"
+         "          @body_near = true if distanceSoFar + (agentPos - startPos) <= @body_aware  # SINGLELANE:bodybreak\n"
          "          next\n"
          "        end\n"),
         ("Crush3/CrushAgent.rb",
@@ -431,6 +436,7 @@ RUBY_FIXES = {
          "        next if agentPos == startPos && myTurnIsOver\n"
          "        if agent.hasTag(\"crushed\")  # SINGLELANE:stepover -- a body is stepped over, not an obstacle\n"
          "          @on_body = true if distanceSoFar + (agentPos - startPos) <= @physicalSpace\n"
+         "          @body_near = true if distanceSoFar + (agentPos - startPos) <= @body_aware  # SINGLELANE:bodybreak\n"
          "          next\n"
          "        end\n"),
         ("Crush3/CrushAgent.rb",
@@ -447,6 +453,10 @@ RUBY_FIXES = {
     # floor 0.1, chosen by hand there too). A (user): the longer someone stands touching the person
     # ahead, the weaker they push (nobody pushes full force to hurt), down to pushResidual.
     # No measured values exist for any of these four numbers: test a range before relying on them.
+    # Fix 15 (2026-10-21, marker SINGLELANE:recover, inside this patch because it edits the same
+    # line): the waiting time used to reset to 0 on the first gap ahead. A crushed body is stepped
+    # over, so it opens a gap: everyone behind got their full push back at once and the next person
+    # was crushed (the cascade). Now it runs back down at pushRecoverRate x the rate it built up.
     "pushfade": [
         ("Crush3/CrushAgent.rb",
          '    @body_step_factor = props.getDouble("bodyStepFactor", 0.5)\n',
@@ -455,16 +465,20 @@ RUBY_FIXES = {
          '    @push_near = props.getDouble("pushNearDistance", 10.0)\n'
          '    @push_far = props.getDouble("pushFarShare", 0.1)\n'
          '    @push_fade_time = props.getDouble("pushFadeTime", 60.0)\n'
-         '    @push_residual = props.getDouble("pushResidual", 0.2)\n'),
+         '    @push_residual = props.getDouble("pushResidual", 0.2)\n'
+         '    @push_recover = props.getDouble("pushRecoverRate", 1.0)  # SINGLELANE:recover -- fix 15, placeholder\n'),
         ("Crush3/CrushAgent.rb",
          "    PhysicsBlackboard.instance.log_drive(getAgentId(), @my_mass * [_accel, 0.0].max)\n",
          "    # SINGLELANE:pushfade -- B: near the end of the link (ponytail: link end stands in for the\n"
          "    # bottleneck; use the queue front if jams form mid-link). A: fades while touching the one ahead.\n"
          "    to_end = @javaAgent.currentPlace.getLinkLength() - @javaAgent.currentPlace.getAdvancingDistance()\n"
          "    near = to_end < @push_near ? Math::E * Math.exp(1.0 / ((to_end / @push_near)**2 - 1.0)) : 0.0\n"
-         "    @wait_time = (@front_gap || Float::INFINITY) <= 0.0 ? (@wait_time || 0.0) + currentTime.getTickUnit() : 0.0\n"
+         "    # SINGLELANE:recover -- the wait runs back down instead of resetting on the first gap (fix 15)\n"
+         "    dt = currentTime.getTickUnit()\n"
+         "    @wait_time = (@front_gap || Float::INFINITY) <= 0.0 ? (@wait_time || 0.0) + dt : [(@wait_time || 0.0) - @push_recover * dt, 0.0].max\n"
          "    fade = @push_residual + (1.0 - @push_residual) * Math.exp(-@wait_time / @push_fade_time)\n"
          "    push_share = (@push_far + (1.0 - @push_far) * near) * fade\n"
+         "    push_share *= @body_pass if @body_near  # SINGLELANE:bodybreak\n"
          "    PhysicsBlackboard.instance.log_drive(getAgentId(), push_share * @my_mass * [_accel, 0.0].max)\n"),
     ],
     # Fix 14 (2026-10-20, user): nobody is crushed while they can still move forward. The crush
@@ -475,6 +489,36 @@ RUBY_FIXES = {
          "    if final_crush_pressure > active_threshold\n",
          "    pinned = (@front_gap || Float::INFINITY) <= 0.0 || (@prev_speed || 0.0) <= 0.02  # SINGLELANE:pinned\n"
          "    if final_crush_pressure > active_threshold && pinned\n"),
+    ],
+    # Fix 17 (2026-10-21, user rule R2: not everyone behind a body dies). Someone lying on the ground
+    # is not part of the standing chain that passes a push forward, but the chain skipped bodies and
+    # carried the full pressure across them. Within bodyAwareDistance behind a body, an agent pushes
+    # and passes on only bodyPassShare (the init and search parts sit in the stepover patch, the push
+    # part in the pushfade patch, because they edit the same lines). Defaults 0 m / 1.0 = off.
+    "bodybreak": [
+        ("Crush3/CrushAgent.rb",
+         "    PhysicsBlackboard.instance.log_pressure(getAgentId(), pressure_from_behind)\n",
+         "    # SINGLELANE:bodybreak -- right behind a body, only bodyPassShare of the push from behind goes on\n"
+         "    PhysicsBlackboard.instance.log_pressure(getAgentId(), pressure_from_behind * (@body_near ? @body_pass : 1.0))\n"),
+    ],
+    # Fix 16 (2026-10-21): everyone had the same limit (1112 N for exactly 240 s), so a whole
+    # stretch of queue died in the same minute (test: 196 of 196 deaths in sim minute 9). Kroll et
+    # al. 2017 give 4-6 min, so each agent draws its own limit from crushDuration..crushDurationMax
+    # (seeded by randseed + agent id: same run, same draw on any machine). Unset max = no spread.
+    "tolerance": [
+        ("Crush3/CrushAgent.rb",
+         '    @crush_duration = props.getDouble("crushDuration", 240.0)\n',
+         '    @crush_duration = props.getDouble("crushDuration", 240.0)\n'
+         '    # SINGLELANE:tolerance -- own limit up to crushDurationMax, drawn on first use (no agent ID yet here)\n'
+         '    @crush_spread = props.getDouble("crushDurationMax", @crush_duration) - @crush_duration\n'
+         '    @crush_seed = props.getDouble("randseed", 0.0)\n'),
+        ("Crush3/CrushAgent.rb",
+         "    if @time_over_threshold >= @crush_duration\n",
+         "    if @crush_spread  # SINGLELANE:tolerance -- the ID is set by now (in initialize it was not: all agents drew the same)\n"
+         '      @crush_duration += @crush_spread * Random.new(Digest::MD5.hexdigest("#{@crush_seed}-#{getAgentId()}").to_i(16)).rand\n'
+         "      @crush_spread = nil\n"
+         "    end\n"
+         "    if @time_over_threshold >= @crush_duration\n"),
     ],
 }
 

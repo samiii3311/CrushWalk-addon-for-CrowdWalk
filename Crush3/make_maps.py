@@ -20,6 +20,9 @@ with new crowd data, while --holdout-map tests maps it never saw. The five famil
               or one-way (W and S spawn, walk to E and N)
   tree        branching egress: 2-3 levels of branches merging toward one narrow exit
 
+Not in the default (--families randnet): randnet, a random street network (random_net.py),
+kept for the unseen-map test.
+
 Random per map: link lengths, widths, bottleneck width, feeder count/angles,
 tree shape. Random per run, in gen.json: the total agent count (inflow surge), each spawn
 group's start-time offset (departure timing skew) and release duration.
@@ -58,6 +61,7 @@ sys.path.insert(0, str(HERE))
 from link_context import parse_json_c, parse_links, read_json_c  # noqa: E402
 
 FAMILIES = ["corridor", "funnel", "tjunction", "crossroads", "tree"]
+EXTRA_FAMILIES = ["randnet"]  # not in the default: random street networks for the unseen-map test (random_net.py)
 
 
 class MapBuilder:
@@ -208,6 +212,11 @@ def tree(r):
                                     "bottleneck_width": we}
 
 
+def randnet(r):
+    import random_net
+    return random_net.build(r, MapBuilder())
+
+
 def add_walls(m, r, share):
     """Walls go on any link, quiet ones too, so a wall alone never means a crush. Own RNG and two draws
     per link at every share: maps are unchanged at share 0, and a higher share only adds walls."""
@@ -217,23 +226,59 @@ def add_walls(m, r, share):
             l["tags"].append("WALL2" if side < 0.5 else "WALL1")
 
 
-def wall_bottleneck(m, width):
-    """WALL2 on the narrow link everyone passes (Akashi 2001, Itaewon 2022). Every family reports it as
-    bottleneck_width; crossroads' narrow arm is two links (arm + stub), both get it."""
-    for l in m.links:
-        if l["width"] == round(width, 3):
-            l["tags"] = [t for t in l["tags"] if not t.startswith("WALL")] + ["WALL2"]
+def wall_bottleneck(m, fam, params, length):
+    """WALL2 where everyone passes (Akashi 2001, Itaewon 2022). Corridor, funnel, T-junction, tree: the
+    bottleneck link (bottleneck_width), which is on every route. Crossroads has no shared link, the
+    groups only meet at the center node: the last `length` m of each of the 4 links into it is split
+    off as its own walled link (a walled square around the crossing). New nodes/links get new IDs, so
+    the others keep theirs. randnet names its link (bottleneck_link: the one most routes share)."""
+    if "bottleneck_link" in params:
+        for l in m.links:
+            if l["id"] == params["bottleneck_link"]:
+                l["tags"] = [t for t in l["tags"] if not t.startswith("WALL")] + ["WALL2"]
+        return
+    width = params["bottleneck_width"]
+    if fam != "crossroads":
+        for l in m.links:
+            if l["width"] == round(width, 3):
+                l["tags"] = [t for t in l["tags"] if not t.startswith("WALL")] + ["WALL2"]
+        return
+    hub = m.nodes[0]  # crossroads() makes the center node first
+    nodes = {n["id"]: n for n in m.nodes}
+    for l in [l for l in m.links if hub["id"] in (l["from"], l["to"])]:
+        out = l["from"] == hub["id"]
+        far = nodes[l["to"] if out else l["from"]]
+        t = length / l["length"]
+        mid = m.node(hub["x"] + (far["x"] - hub["x"]) * t, hub["y"] + (far["y"] - hub["y"]) * t)
+        hub["links"].remove(l["id"])
+        mid["links"].append(l["id"])
+        l["from" if out else "to"] = mid["id"]
+        l["length"] = math.hypot(far["x"] - mid["x"], far["y"] - mid["y"])
+        m.link(hub, mid, l["width"], "WALL2") if out else m.link(mid, hub, l["width"], "WALL2")
 
 
-def make_gen(r, groups, agent_template, release_scale=1.0):
+# Most people per metre of width per second a walkway carries: 1.3, the flow coefficient in MLIT's
+# evacuation simulation report (資料2-1, from 建築設計資料集成; given for stairs, flat walkways are a
+# little higher, so this errs toward slower release). --max-flow changes it, 0 turns the cap off.
+MAX_FLOW = 1.3
+
+
+def make_gen(r, groups, agent_template, release_scale=1.0, spawn_width=None, max_flow=MAX_FLOW):
     """One gen entry per spawn group. total = inflow surge, start offset = departure skew.
-    release_scale multiplies each group's release time (0.2 = 5x faster arrivals, same random draws)."""
+    release_scale multiplies each group's release time (0.2 = 5x faster arrivals, same random draws).
+    spawn_width {spawn_tag: total width of its links}: a group is released no faster than its spawn
+    links carry (people / (max_flow x width)). Without the cap, a big crowd released onto one link
+    starts as one dense block there and every crush happened on spawn links (2026-10-21). The cap
+    comes after release_scale, so it also limits a faster --release-scale."""
     total = r.randint(300, 3000)
     shares = [r.random() + 0.2 for _ in groups]
     counts = [max(1, round(total * s / sum(shares))) for s in shares]
     entries, params = [], {"total_agents": sum(counts)}
     for (spawn, goal), n in zip(groups, counts):
         skew, dur = r.randint(0, 600), round(r.uniform(5, 300) * release_scale, 1)
+        if spawn_width and max_flow:
+            params[f"{spawn}_drawn_duration_s"] = dur
+            dur = max(dur, round(n / (max_flow * spawn_width[spawn]), 1))
         start = 18 * 3600 + 60 + skew  # scenario Initiates at 18:00:00
         entries.append({**agent_template, "total": n, "startPlace": spawn, "goal": goal,
                         "startTime": f"{start // 3600:02d}:{start % 3600 // 60:02d}:{start % 60:02d}",
@@ -243,7 +288,7 @@ def make_gen(r, groups, agent_template, release_scale=1.0):
 
 
 def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1, sim_minutes=60, prop_set=None,
-             release_scale=1.0, wall_share=0.0, wall_maps=1.0, bottleneck_walls=0.0):
+             release_scale=1.0, wall_share=0.0, wall_maps=1.0, bottleneck_walls=0.0, max_flow=MAX_FLOW):
     """prop_set: {key: value} written over the template prop.json in every run (e.g. physics knobs).
     wall_share: share of links with a wall, tagged WALL1 (one side) or WALL2 (both), half each.
     wall_maps: share of maps that get those walls (the rest stay open). bottleneck_walls: share of the
@@ -260,19 +305,29 @@ def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1
             name = f"{fam}_{i:03d}"
             r = random.Random(f"{seed}-{name}")
             m, groups, mparams = globals()[fam](r)
-            u_maps, u_bneck = (rk := random.Random(f"{seed}-{name}-wallkind")).random(), rk.random()
+            rk = random.Random(f"{seed}-{name}-wallkind")
+            # ponytail: walled-square length 10-40 m hand-picked (Itaewon alley ~40 m); widen here if needed
+            u_maps, u_bneck, sq_len = rk.random(), rk.random(), rk.uniform(10, 40)
             walled, bneck = u_maps < wall_maps, u_maps < wall_maps and u_bneck < bottleneck_walls
             if walled:
                 add_walls(m, random.Random(f"{seed}-{name}-walls"), wall_share)
             if bneck:
-                wall_bottleneck(m, mparams["bottleneck_width"])
+                wall_bottleneck(m, fam, mparams, sq_len)
+                if fam == "crossroads":
+                    mparams["wall_square_m"] = round(sq_len, 3)
             mparams["wall_kind"] = "bottleneck" if bneck else "random" if walled and wall_share > 0 else "none"
+            spawn_width = {}
+            for l in m.links:
+                for t in l["tags"]:
+                    if t.startswith("Spawn"):
+                        spawn_width[t] = spawn_width.get(t, 0) + l["width"]
             mparams["walled_links"] = sum(any(t.startswith("WALL") for t in l["tags"]) for l in m.links)
             (out / name).mkdir(exist_ok=True)
             (out / name / "Map.xml").write_text(m.xml(), encoding="utf-8")
             for j in range(runs_per_map):  # same map, different crowd (gen.json) per run
                 run = f"{name}/run_{j}"
-                gen_text, gparams = make_gen(random.Random(f"{seed}-{run}"), groups, agent_template, release_scale)
+                gen_text, gparams = make_gen(random.Random(f"{seed}-{run}"), groups, agent_template, release_scale,
+                                             spawn_width, max_flow)
                 d = out / run
                 d.mkdir(exist_ok=True)
                 (d / "gen.json").write_text(gen_text, encoding="utf-8")
@@ -320,6 +375,12 @@ def selftest():
     assert len(rows) == 30 and (out / "manifest.csv").exists()
     assert read_json_c(out / rows[0]["run"] / "prop.json")["pushResidual"] == 0.5  # --set reaches every run
     g = [make_gen(random.Random("x"), [("A", "G"), ("B", "G")], {}, s)[1] for s in (1.0, 0.2)]
+    # release cap: never faster than max_flow x spawn width; slow draws are kept as drawn
+    c = make_gen(random.Random("x"), [("A", "G"), ("B", "G")], {}, 1.0, {"A": 2.0, "B": 50.0}, 1.3)[1]
+    assert c["A_duration_s"] >= round(c["A_agents"] / 2.6, 1) - 0.1 and c["A_duration_s"] > c["A_drawn_duration_s"]
+    assert c["B_duration_s"] == c["B_drawn_duration_s"] == g[0]["B_duration_s"] and c["A_agents"] == g[0]["A_agents"]
+    assert all(row[k] <= row[k.replace("_duration_s", "_agents")] / 1.3 / 2.0 + 300.1  # cap uses the spawn width
+               for row in rows for k in row if k.endswith("_duration_s") and "drawn" not in k)
     assert g[0]["A_agents"] == g[1]["A_agents"] and abs(g[1]["A_duration_s"] - 0.2 * g[0]["A_duration_s"]) <= 0.1  # same crowd, 5x faster
     for row in rows:
         d, map_xml = out / row["run"], out / row["map"] / "Map.xml"
@@ -387,17 +448,24 @@ def selftest():
     # map mix: none / random / random + walled bottleneck; random-walled maps keep exactly their walls
     kd = Path(tempfile.mkdtemp())
     km = generate(kd, 10, 7, HERE, None, runs_per_map=1, wall_share=0.3, wall_maps=0.7, bottleneck_walls=0.5)
-    plain = generate(Path(tempfile.mkdtemp()), 10, 7, HERE, None, runs_per_map=1, wall_share=0.3)
+    plain = generate(plain_dir := Path(tempfile.mkdtemp()), 10, 7, HERE, None, runs_per_map=1, wall_share=0.3)
     assert {r["wall_kind"] for r in km} == {"none", "random", "bottleneck"}
     for r, b in zip(km, plain):
         if r["wall_kind"] == "none":
             assert r["walled_links"] == 0
         elif r["wall_kind"] == "random":
             assert r["walled_links"] == b["walled_links"]
-        else:
+        elif r["family"] != "crossroads":
             links = parse_links(kd / r["map"] / "Map.xml")
             narrow = links[links["width"] == round(r["bottleneck_width"], 3)]
             assert len(narrow) and all("WALL2" in str(t) for t in narrow["link_tags"]), r["map"]
+        else:  # 4 links split: 4 more links, 4 new walled pieces of wall_square_m, same total length
+            links, open_ = parse_links(kd / r["map"] / "Map.xml"), parse_links(plain_dir / r["map"] / "Map.xml")
+            sq = links[links["link_tags"] == "WALL2"].iloc[-4:]
+            assert len(links) == len(open_) + 4 and len(sq) == 4, r["map"]
+            assert all(abs(x - r["wall_square_m"]) < 0.01 for x in sq["length"]), r["map"]
+            assert abs(links["length"].sum() - open_["length"].sum()) < 0.01, r["map"]
+            assert set(open_["link_id"]) <= set(links["link_id"])  # old IDs kept
     # link logger only: a template prop.json without dynamic_logging still generates
     tpl = Path(tempfile.mkdtemp())
     (tpl / "gen.json").write_text((HERE / "gen.json").read_text(encoding="utf-8"), encoding="utf-8")
@@ -417,18 +485,20 @@ def main():
     p.add_argument("--runs-per-map", type=int, default=3,
                    help="crowd variations (gen.json) per map (default 3) -- lets --cv test a known map with new data")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--families", nargs="+", choices=FAMILIES, default=FAMILIES)
+    p.add_argument("--families", nargs="+", choices=FAMILIES + EXTRA_FAMILIES, default=FAMILIES)
     p.add_argument("--out", type=Path, default=Path("generated_maps"))
     p.add_argument("--template", type=Path, default=HERE, help="folder with prop/gen/scenario.json + Ruby agents")
     p.add_argument("--log-root", default=None, help="where each run writes its CSVs (default: its own folder)")
     p.add_argument("--wall-share", type=float, default=0.0, help="share of links with a wall (default 0 = open)")
     p.add_argument("--wall-maps", type=float, default=1.0, help="share of maps that get the walls (default 1 = all)")
+    p.add_argument("--max-flow", type=float, default=MAX_FLOW,
+                   help=f"release cap, people per metre of spawn width per second (default {MAX_FLOW}; 0 = off)")
     p.add_argument("--bottleneck-walls", type=float, default=0.0,
                    help="share of walled maps that also get WALL2 on the bottleneck (default 0)")
     args = p.parse_args()
     rows = generate(args.out, args.n, args.seed, args.template.resolve(), args.log_root, args.families,
                     args.runs_per_map, args.sim_minutes, wall_share=args.wall_share, wall_maps=args.wall_maps,
-                    bottleneck_walls=args.bottleneck_walls)
+                    bottleneck_walls=args.bottleneck_walls, max_flow=args.max_flow)
     print(f"wrote {len(rows)} runs ({args.n} maps x {len(args.families)} families x {args.runs_per_map}) to {args.out} (see {args.out / 'manifest.csv'})")
 
 

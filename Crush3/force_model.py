@@ -31,6 +31,11 @@ so a random split would leak the answer):
                        once, never in train and test at the same time
   --holdout-map MAP    train on the other maps, test on MAP (map_file column)
   --holdout-map all    leave-one-map-out: one fold per map
+  --holdout-map per-family:K   K folds by map; each fold holds out about 1/K of every
+                       family's maps (family = map folder name without _NNN), so every
+                       map is tested once with K models instead of one per map
+  --holdout-map family:NAME    one fold: test on every map of family NAME (e.g. randnet),
+                       train on the rest. Give two DBs to train on one and test on the other.
 
 Runs in the background by default and shows its log (<out-dir>/run.log) live: Ctrl-C only stops
 showing the log, `--stop` ends the job, `--foreground` runs it in the terminal (see background.py).
@@ -41,6 +46,8 @@ Usage (on the Linux machine):
     python3 force_model.py crush.duckdb --horizon 10 --cv 5 --out-dir force_model_cv
     python3 force_model.py crush.duckdb --cv 5 --target held        # only the held-time model
     python3 force_model.py crush.duckdb --horizon 10 --holdout-map all --out-dir force_model_maps
+    python3 force_model.py d4.duckdb --holdout-map per-family:5 --out-dir fm_maps5
+    python3 force_model.py d4.duckdb randnet.duckdb --holdout-map family:randnet --out-dir fm_randnet
     python3 force_model.py crush.duckdb --horizon 10 --cv 5 --observable-only --out-dir force_model_obs
     python3 force_model.py crush.duckdb --horizon 10 --cv 5 --at-horizon --out-dir force_model_at10   # old target
     python3 force_model.py crush.duckdb --horizon 120 --cv 5 --target pressure --models all --no-importance
@@ -112,6 +119,25 @@ def make_folds(df, test_frac=0.2, cv=None, holdout_map=None):
         labels = labels.where(~dup, labels + " [" + labels.index.astype(str).str[:8] + "]")
         if len(labels) < 2:
             sys.exit(f"--holdout-map needs runs on at least 2 maps; only have {list(labels)}")
+        raw = df.groupby(key).map_file.first() if "map_file" in df else labels
+        fam = raw.astype(str).str.split("/").str[0].str.replace(r"_\d+$", "", regex=True)
+        runs = lambda mask: f", {df.scenario_id[mask].nunique()} runs" if "scenario_id" in df else ""
+        if holdout_map.startswith("per-family:"):
+            k = int(holdout_map.split(":", 1)[1])
+            fold_of = {m: i % k for _, ms in fam.groupby(fam) for i, m in enumerate(sorted(ms.index, key=labels.get))}
+            folds = []
+            for j in range(k):
+                mask = df[key].map(fold_of).eq(j).to_numpy()
+                n = sum(v == j for v in fold_of.values())
+                if n:
+                    folds.append((f"map fold {j + 1} ({n} maps{runs(mask)})", mask))
+            return folds
+        if holdout_map.startswith("family:"):
+            name = holdout_map.split(":", 1)[1]
+            mask = df[key].map(fam).eq(name).to_numpy()
+            if not mask.any() or mask.all():
+                sys.exit(f"--holdout-map {holdout_map}: need maps of {name!r} and of other families; have {sorted(set(fam))}")
+            return [(f"test family {name} ({(fam == name).sum()} maps{runs(mask)})", mask)]
         if holdout_map == "all":
             chosen = list(labels.index)
         else:
@@ -290,7 +316,9 @@ def first_crossings(df, target, threshold):
 
 
 def load_data(path):
-    """All runs from a DuckDB file filled by link_context.py (table link_ticks), or a CSV."""
+    """All runs from a DuckDB file filled by link_context.py (table link_ticks), or a CSV; a list = all of them."""
+    if isinstance(path, list):
+        return pd.concat([load_data(p) for p in path], ignore_index=True)
     if path.suffix == ".csv":
         return pd.read_csv(path)
     import duckdb
@@ -341,6 +369,17 @@ def selftest():
     assert set(oof.map_file) == {"m2.xml"} and oof.scenario_id.nunique() == 2
     _, oof = run(df, horizon=5, test_frac=0.2, out_dir=tmp / "maps", models=plain, holdout_map="all")
     assert oof.groupby("map_file").fold.nunique().eq(1).all() and oof.fold.nunique() == 2
+
+    # per-family:K -- every map tested once, each fold has some maps of every family; family:NAME
+    fm = {f"{f}_{i:03d}/Map.xml": f"{f}{i}" for f in ("corridor", "funnel", "randnet") for i in range(4)}
+    d3 = pd.concat([one_run(f"{lab}-r{j}", lab) for lab in fm for j in range(2)], ignore_index=True)
+    d3 = add_target(d3.assign(map_id=d3.map_file.map(fm)), 5)
+    folds = make_folds(d3, holdout_map="per-family:2")
+    assert len(folds) == 2 and sum(m.astype(int) for _, m in folds).tolist() == [1] * len(d3)
+    for _, m in folds:
+        assert d3.map_file[m].drop_duplicates().str.split("_").str[0].value_counts().tolist() == [2, 2, 2]
+    (name, m), = make_folds(d3, holdout_map="family:randnet")
+    assert set(d3.map_file[m].str[:7]) == {"randnet"} and "randnet" not in set(d3.map_file[~m].str[:7]), name
 
     # observable-only: force columns out of the features
     run(df.assign(max_push_force=1.0, prev_max_compression_pressure=2.0), horizon=5, test_frac=0.2,
@@ -400,12 +439,15 @@ def main():
     if sys.argv[1:] == ["--selftest"]:
         return selftest()
     p = argparse.ArgumentParser(description="Predict link pressure and held time ahead; report MAE/RMSE.")
-    p.add_argument("data", type=Path, help="DuckDB file filled by link_context.py (all runs in link_ticks), or a CSV")
+    p.add_argument("data", type=Path, nargs="+",
+                   help="DuckDB file(s) filled by link_context.py (all runs in link_ticks), or CSV; several are joined")
     p.add_argument("--horizon", type=int, default=10, help="ticks ahead to predict (default 10)")
     split = p.add_mutually_exclusive_group()
     split.add_argument("--cv", type=int, default=None, metavar="K", help="K-fold cross-validation grouped by run")
     split.add_argument("--holdout-map", default=None, metavar="MAP",
-                       help="test on this map_file, train on the others; 'all' = leave-one-map-out")
+                       help="test on this map_file, train on the others; 'all' = leave-one-map-out; "
+                            "'per-family:K' = K folds, each with ~1/K of every family's maps; "
+                            "'family:NAME' = test on all maps of that family (e.g. randnet)")
     p.add_argument("--test-frac", type=float, default=0.2, help="default split only")
     p.add_argument("--target", nargs="+", choices=TARGETS, default=list(TARGETS),
                    help="what to predict: pressure (N) and/or held (s above crushThreshold); default both")

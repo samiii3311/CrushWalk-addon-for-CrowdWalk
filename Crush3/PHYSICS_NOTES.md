@@ -174,6 +174,13 @@ is ours.
    were unchanged by fixes 11 and 12, but death counts from the simulator should not be reported
    as realistic.
 
+10. **How long, not how hard.** A person is crushed after being held above the line
+   (`crushThreshold`) for their own limit (240-360 s, fix 16). How far above it does not count:
+   1,100 N and 13,000 N kill after the same time. Real compression asphyxia is faster under a
+   stronger squeeze, so a wall that raises the pressure cannot make a crush come sooner. Seen in
+   the bottleneck test (2026-10-21): the walled bottleneck raised the 2-wall peak from 5,507 to
+   13,909 N but gave the same 14 / 36 crush runs. Kept as it is for now (user, 2026-10-21).
+
 ## To work on eventually
 
 - Find a measured basis for `pressureTransfer`, or show how results change across a range of

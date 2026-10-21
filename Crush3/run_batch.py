@@ -50,7 +50,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import background  # noqa: E402
 from link_context import TABLE, build_run, read_json_c, write_db  # noqa: E402
-from make_maps import FAMILIES as ALL_FAMILIES, generate  # noqa: E402
+from make_maps import FAMILIES as ALL_FAMILIES, EXTRA_FAMILIES, MAX_FLOW, generate  # noqa: E402
 
 # =============================================================================
 # SETTINGS -- edit these, then just run:  python3 Crush3/run_batch.py
@@ -214,7 +214,7 @@ def run_batches(args, sim_cmd):
             rows = generate(out / tag, args.n, seed, HERE, Path(args.log_root) / tag if args.log_root else None,
                             args.families, args.runs_per_map, args.sim_minutes,
                             {k: float(v) for k, v in (s.split("=", 1) for s in args.set)}, args.release_scale,
-                            args.wall_share, args.wall_maps, args.bottleneck_walls)
+                            args.wall_share, args.wall_maps, args.bottleneck_walls, args.max_flow)
             todo = [r for r in rows if f"{tag}/{r['run']}" not in done]
             if args.runs:
                 todo = todo[:args.runs - loaded]  # only launch what is still needed
@@ -281,7 +281,7 @@ def selftest():
                               start_seed=5, batches=2, runs=None, n=1, runs_per_map=2, sim_minutes=60, families=ALL_FAMILIES, jobs=2,
                               timeout=60, crowdwalk=tmp, drop_agent_log=False,
                               max_fail_streak=10, progress_every=1, set=[], release_scale=1.0, wall_share=0.0,
-                              wall_maps=1.0, bottleneck_walls=0.0)
+                              wall_maps=1.0, bottleneck_walls=0.0, max_flow=0.0)
     run_batches(args, sim)
     import duckdb
     with duckdb.connect(args.db, read_only=True) as con:
@@ -352,7 +352,7 @@ def main():
     p.add_argument("--n", type=int, default=N_MAPS_PER_FAMILY, help="maps per family per seed")
     p.add_argument("--runs-per-map", type=int, default=RUNS_PER_MAP)
     p.add_argument("--sim-minutes", type=int, default=SIM_MINUTES, help="simulated minutes before Finish")
-    p.add_argument("--families", nargs="+", choices=ALL_FAMILIES, default=FAMILIES)
+    p.add_argument("--families", nargs="+", choices=ALL_FAMILIES + EXTRA_FAMILIES, default=FAMILIES)
     p.add_argument("--set", action="append", default=[], metavar="KEY=NUMBER",
                    help="override a numeric prop.json value in every run, e.g. --set pushResidual=0.5 (repeatable)")
     p.add_argument("--release-scale", type=float, default=1.0,
@@ -360,6 +360,9 @@ def main():
     p.add_argument("--wall-share", type=float, default=0.0,
                    help="share of links with a wall (WALL1/WALL2 tag, half each; default 0 = open crowd). "
                         "Needs wallPressureTransfer in prop.json to change the physics")
+    p.add_argument("--max-flow", type=float, default=MAX_FLOW,
+                   help=f"release cap: a spawn group enters no faster than this many people per metre of spawn "
+                        f"width per second (default {MAX_FLOW}, MLIT flow coefficient; 0 = off, as before 2026-10-21)")
     p.add_argument("--wall-maps", type=float, default=1.0,
                    help="share of maps that get the --wall-share walls; the rest stay open (default 1 = all)")
     p.add_argument("--bottleneck-walls", type=float, default=0.0,

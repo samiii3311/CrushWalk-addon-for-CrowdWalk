@@ -217,6 +217,14 @@ def add_walls(m, r, share):
             l["tags"].append("WALL2" if side < 0.5 else "WALL1")
 
 
+def wall_bottleneck(m, width):
+    """WALL2 on the narrow link everyone passes (Akashi 2001, Itaewon 2022). Every family reports it as
+    bottleneck_width; crossroads' narrow arm is two links (arm + stub), both get it."""
+    for l in m.links:
+        if l["width"] == round(width, 3):
+            l["tags"] = [t for t in l["tags"] if not t.startswith("WALL")] + ["WALL2"]
+
+
 def make_gen(r, groups, agent_template, release_scale=1.0):
     """One gen entry per spawn group. total = inflow surge, start offset = departure skew.
     release_scale multiplies each group's release time (0.2 = 5x faster arrivals, same random draws)."""
@@ -235,9 +243,11 @@ def make_gen(r, groups, agent_template, release_scale=1.0):
 
 
 def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1, sim_minutes=60, prop_set=None,
-             release_scale=1.0, wall_share=0.0):
+             release_scale=1.0, wall_share=0.0, wall_maps=1.0, bottleneck_walls=0.0):
     """prop_set: {key: value} written over the template prop.json in every run (e.g. physics knobs).
-    wall_share: share of links with a wall, tagged WALL1 (one side) or WALL2 (both), half each."""
+    wall_share: share of links with a wall, tagged WALL1 (one side) or WALL2 (both), half each.
+    wall_maps: share of maps that get those walls (the rest stay open). bottleneck_walls: share of the
+    walled maps that also get WALL2 on the bottleneck on purpose (manifest column wall_kind)."""
     out.mkdir(parents=True, exist_ok=True)
     gen_entry = read_gen(template / "gen.json")[0]
     agent_template = {k: v for k, v in gen_entry.items() if k not in ("total", "startPlace", "goal", "startTime", "duration")}
@@ -250,7 +260,13 @@ def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1
             name = f"{fam}_{i:03d}"
             r = random.Random(f"{seed}-{name}")
             m, groups, mparams = globals()[fam](r)
-            add_walls(m, random.Random(f"{seed}-{name}-walls"), wall_share)
+            u_maps, u_bneck = (rk := random.Random(f"{seed}-{name}-wallkind")).random(), rk.random()
+            walled, bneck = u_maps < wall_maps, u_maps < wall_maps and u_bneck < bottleneck_walls
+            if walled:
+                add_walls(m, random.Random(f"{seed}-{name}-walls"), wall_share)
+            if bneck:
+                wall_bottleneck(m, mparams["bottleneck_width"])
+            mparams["wall_kind"] = "bottleneck" if bneck else "random" if walled and wall_share > 0 else "none"
             mparams["walled_links"] = sum(any(t.startswith("WALL") for t in l["tags"]) for l in m.links)
             (out / name).mkdir(exist_ok=True)
             (out / name / "Map.xml").write_text(m.xml(), encoding="utf-8")
@@ -368,6 +384,20 @@ def selftest():
         tags = {s: dict(zip(*parse_links(w[s] / row["map"] / "Map.xml")[["link_id", "link_tags"]].T.values))
                 for s in (0.3, 0.6)}
         assert all(t in tags[0.6][k] for k, t in tags[0.3].items())  # walls at 0.3 are still there at 0.6
+    # map mix: none / random / random + walled bottleneck; random-walled maps keep exactly their walls
+    kd = Path(tempfile.mkdtemp())
+    km = generate(kd, 10, 7, HERE, None, runs_per_map=1, wall_share=0.3, wall_maps=0.7, bottleneck_walls=0.5)
+    plain = generate(Path(tempfile.mkdtemp()), 10, 7, HERE, None, runs_per_map=1, wall_share=0.3)
+    assert {r["wall_kind"] for r in km} == {"none", "random", "bottleneck"}
+    for r, b in zip(km, plain):
+        if r["wall_kind"] == "none":
+            assert r["walled_links"] == 0
+        elif r["wall_kind"] == "random":
+            assert r["walled_links"] == b["walled_links"]
+        else:
+            links = parse_links(kd / r["map"] / "Map.xml")
+            narrow = links[links["width"] == round(r["bottleneck_width"], 3)]
+            assert len(narrow) and all("WALL2" in str(t) for t in narrow["link_tags"]), r["map"]
     # link logger only: a template prop.json without dynamic_logging still generates
     tpl = Path(tempfile.mkdtemp())
     (tpl / "gen.json").write_text((HERE / "gen.json").read_text(encoding="utf-8"), encoding="utf-8")
@@ -392,9 +422,13 @@ def main():
     p.add_argument("--template", type=Path, default=HERE, help="folder with prop/gen/scenario.json + Ruby agents")
     p.add_argument("--log-root", default=None, help="where each run writes its CSVs (default: its own folder)")
     p.add_argument("--wall-share", type=float, default=0.0, help="share of links with a wall (default 0 = open)")
+    p.add_argument("--wall-maps", type=float, default=1.0, help="share of maps that get the walls (default 1 = all)")
+    p.add_argument("--bottleneck-walls", type=float, default=0.0,
+                   help="share of walled maps that also get WALL2 on the bottleneck (default 0)")
     args = p.parse_args()
     rows = generate(args.out, args.n, args.seed, args.template.resolve(), args.log_root, args.families,
-                    args.runs_per_map, args.sim_minutes, wall_share=args.wall_share)
+                    args.runs_per_map, args.sim_minutes, wall_share=args.wall_share, wall_maps=args.wall_maps,
+                    bottleneck_walls=args.bottleneck_walls)
     print(f"wrote {len(rows)} runs ({args.n} maps x {len(args.families)} families x {args.runs_per_map}) to {args.out} (see {args.out / 'manifest.csv'})")
 
 

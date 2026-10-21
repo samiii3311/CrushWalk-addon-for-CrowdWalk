@@ -26,7 +26,7 @@
     },
     "crushThreshold":1112.0,  // N, Kroll et al. 2017
     "pressureTransfer":0.97,   // share of received pressure passed on per person (1 = full, A->B->C). Calibration choice, no source: sets the pressure ceiling of a queue, about 1,090 N at 0.95 (never crushes), about 2,000 N at 0.97. See PHYSICS_NOTES.md
-    "wallPressureTransfer":0.97, // walls (draft): share passed on along a link with walls on both sides (WALL2; WALL1 = halfway). = pressureTransfer means walls change nothing; not tuned, no source
+    "wallPressureTransfer": 1.0, // walls: share passed on along a link with walls on both sides (WALL2; WALL1 = halfway). 1.0 = a wall leaks nothing (user, 2026-10-21, from the wall test: 2-wall peak 5507 N ~ Itaewon estimate); no measured source
     "contactBraking":true,    // SFM repulsion also from people ahead within contact range (false = old behaviour)
     "crushMargin":50.0,      // N; once over crushThreshold, keeps counting down to crushThreshold - crushMargin
     "crushDuration":240.0,   // seconds above crushThreshold in a row before crush (Kroll et al. 2017: 4-6 min)

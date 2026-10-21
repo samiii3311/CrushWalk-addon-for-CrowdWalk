@@ -214,7 +214,7 @@ def run_batches(args, sim_cmd):
             rows = generate(out / tag, args.n, seed, HERE, Path(args.log_root) / tag if args.log_root else None,
                             args.families, args.runs_per_map, args.sim_minutes,
                             {k: float(v) for k, v in (s.split("=", 1) for s in args.set)}, args.release_scale,
-                            args.wall_share)
+                            args.wall_share, args.wall_maps, args.bottleneck_walls)
             todo = [r for r in rows if f"{tag}/{r['run']}" not in done]
             if args.runs:
                 todo = todo[:args.runs - loaded]  # only launch what is still needed
@@ -280,7 +280,8 @@ def selftest():
     args = argparse.Namespace(out=str(tmp / "maps"), log_root=str(tmp / "logs"), db=str(tmp / "t.duckdb"),
                               start_seed=5, batches=2, runs=None, n=1, runs_per_map=2, sim_minutes=60, families=ALL_FAMILIES, jobs=2,
                               timeout=60, crowdwalk=tmp, drop_agent_log=False,
-                              max_fail_streak=10, progress_every=1, set=[], release_scale=1.0, wall_share=0.0)
+                              max_fail_streak=10, progress_every=1, set=[], release_scale=1.0, wall_share=0.0,
+                              wall_maps=1.0, bottleneck_walls=0.0)
     run_batches(args, sim)
     import duckdb
     with duckdb.connect(args.db, read_only=True) as con:
@@ -359,6 +360,11 @@ def main():
     p.add_argument("--wall-share", type=float, default=0.0,
                    help="share of links with a wall (WALL1/WALL2 tag, half each; default 0 = open crowd). "
                         "Needs wallPressureTransfer in prop.json to change the physics")
+    p.add_argument("--wall-maps", type=float, default=1.0,
+                   help="share of maps that get the --wall-share walls; the rest stay open (default 1 = all)")
+    p.add_argument("--bottleneck-walls", type=float, default=0.0,
+                   help="share of the walled maps that also get WALL2 on the bottleneck on purpose "
+                        "(manifest column wall_kind = none/random/bottleneck; default 0)")
     p.add_argument("--out", default=OUT_DIR, help="where scenario folders + runner_log.csv go")
     p.add_argument("--log-root", default=LOG_ROOT, help="where the simulator writes CSVs (default: each run folder)")
     p.add_argument("--db", default=DB_PATH)

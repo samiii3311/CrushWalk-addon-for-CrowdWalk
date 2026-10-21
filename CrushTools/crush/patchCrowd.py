@@ -634,6 +634,35 @@ RUBY_FIXES = {
          "\n"
          "  def calcSpeedBody(previousSpeed, currentTime, speed_factor)\n"),
     ],
+    # Fixes 21 and 22 (2026-10-21). 21: personal space stops growing at personalSpaceMax (Seyfried's
+    # line was fitted up to 1 m/s; fast walkers kept 1.47 m and walked slower than with a fixed 0.6 m).
+    # 22: CrowdWalk's pseudo-lane width MapLink.dWidth (hard-coded 1.0 m) from setting laneWidth, so
+    # people fit side by side (Fruin-type body width ~0.5-0.6 m; 0.36 m x 0.55 m ~ 5 /m^2, Weidmann 5.4).
+    # Both off by default.
+    "pscap_lanewidth": [
+        ("Crush3/CrushAgent.rb",
+         "  @@dbg_last_tick = -1\n",
+         "  @@dbg_last_tick = -1\n"
+         "  @@lane_width_set = false  # SINGLELANE:lanewidth\n"),
+        ("Crush3/CrushAgent.rb",
+         '    @entry_gate = props.getDouble("entryGateLength", 0.0)  # SINGLELANE:entrygate -- fix 20, 0 = off\n',
+         '    @entry_gate = props.getDouble("entryGateLength", 0.0)  # SINGLELANE:entrygate -- fix 20, 0 = off\n'
+         "    # SINGLELANE:pscap -- fix 21: personal space stops growing at personalSpaceMax (Seyfried's line was fitted up to 1 m/s)\n"
+         '    @ps_max = props.getDouble("personalSpaceMax", Float::INFINITY)\n'
+         "    # SINGLELANE:lanewidth -- fix 22: CrowdWalk's pseudo-lane width (MapLink.dWidth, hard-coded 1.0 m, no\n"
+         "    # setting) from laneWidth; set once per run, before anyone walks. 0 = leave CrowdWalk's 1.0 m.\n"
+         "    # ponytail: set from Ruby because it is a public static field; a Java patch in patchCrowd.py would be cleaner.\n"
+         '    lane_w = props.getDouble("laneWidth", 0.0)\n'
+         "    if lane_w > 0.0 && !@@lane_width_set\n"
+         "      Java::NodagumiAnanPJNetworkMapLink::MapLink.dWidth = lane_w\n"
+         "      @@lane_width_set = true\n"
+         '      $stdout.puts "LANEWIDTH dWidth=#{Java::NodagumiAnanPJNetworkMapLink::MapLink.dWidth}"\n'
+         "    end\n"),
+        ("Crush3/CrushAgent.rb",
+         "    @ps_now = @ps_slope > 0.0 ? @ps_min + @ps_slope * [previousSpeed, 0.0].max : @personalSpace  # SINGLELANE:speedspace\n",
+         "    @ps_now = @ps_slope > 0.0 ? @ps_min + @ps_slope * [previousSpeed, 0.0].max : @personalSpace  # SINGLELANE:speedspace\n"
+         "    @ps_now = [@ps_now, @ps_max].min  # SINGLELANE:pscap\n"),
+    ],
 }
 
 

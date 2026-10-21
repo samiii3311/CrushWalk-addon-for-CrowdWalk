@@ -18,6 +18,7 @@ class CrushAgent < RubyAgentBase
   @@dbg_register_push = 0
   @@dbg_max_raw_pressure = 0.0
   @@dbg_last_tick = -1
+  @@lane_width_set = false  # SINGLELANE:lanewidth
 
   def initialize(agent, config, fallback)
     super(agent, config, fallback)
@@ -37,6 +38,17 @@ class CrushAgent < RubyAgentBase
     @ps_slope = props.getDouble("personalSpaceSlope", 0.0)
     @ps_now = @personalSpace
     @entry_gate = props.getDouble("entryGateLength", 0.0)  # SINGLELANE:entrygate -- fix 20, 0 = off
+    # SINGLELANE:pscap -- fix 21: personal space stops growing at personalSpaceMax (Seyfried's line was fitted up to 1 m/s)
+    @ps_max = props.getDouble("personalSpaceMax", Float::INFINITY)
+    # SINGLELANE:lanewidth -- fix 22: CrowdWalk's pseudo-lane width (MapLink.dWidth, hard-coded 1.0 m, no
+    # setting) from laneWidth; set once per run, before anyone walks. 0 = leave CrowdWalk's 1.0 m.
+    # ponytail: set from Ruby because it is a public static field; a Java patch in patchCrowd.py would be cleaner.
+    lane_w = props.getDouble("laneWidth", 0.0)
+    if lane_w > 0.0 && !@@lane_width_set
+      Java::NodagumiAnanPJNetworkMapLink::MapLink.dWidth = lane_w
+      @@lane_width_set = true
+      $stdout.puts "LANEWIDTH dWidth=#{Java::NodagumiAnanPJNetworkMapLink::MapLink.dWidth}"
+    end
 
     mass_term = ItkTerm.getArg(@fallback, "mass")
     @my_mass = mass_term ? mass_term.getDouble() : 60.0
@@ -280,6 +292,7 @@ class CrushAgent < RubyAgentBase
     _accel = @a0 * (baseSpeed - previousSpeed)
     @prev_speed = previousSpeed  # SINGLELANE:squeeze
     @ps_now = @ps_slope > 0.0 ? @ps_min + @ps_slope * [previousSpeed, 0.0].max : @personalSpace  # SINGLELANE:speedspace
+    @ps_now = [@ps_now, @ps_max].min  # SINGLELANE:pscap
     # Drive = how hard this agent pushes forward (wants to walk faster than it can). Its net
     # accel is usually negative in a jam (the agent ahead brakes it), so that can't be the push.
     # SINGLELANE:pushfade -- B: near the end of the link (ponytail: link end stands in for the

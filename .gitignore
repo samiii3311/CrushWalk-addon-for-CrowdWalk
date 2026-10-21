@@ -27,6 +27,7 @@ hs_err_pid*
 *.jar
 *.csv
 *.md
+!README.md
 .settings/**
 HigashiKU/**
 practice/**

@@ -52,16 +52,16 @@ import baselines
 import models_main
 import results
 from error_bars import median_lead, pieces, real_share, redraw_diff
-from force_model import NOT_FEATURES, TARGET, first_crossings, load_data, run
+from force_model import NOT_FEATURES, SIM_ONLY, TARGET, first_crossings, load_data, run
 from history_sweep import measures, one_se
 
 CUTS = (0.1, 0.2, 0.3, 0.4, 0.5)  # shown by --groups-only so the cut is chosen by looking
 
 
-def inputs(df):
-    """The same input list force_model.run() builds."""
+def inputs(df, observable_only=False):
+    """The same input list force_model.run() builds (observable_only: without force/pressure columns, as --observable-only there)."""
     return [c for c in df.columns if c not in NOT_FEATURES and not c.startswith(baselines.HOLT_PREFIX)
-            and pd.api.types.is_numeric_dtype(df[c])]
+            and pd.api.types.is_numeric_dtype(df[c]) and not (observable_only and any(k in c for k in SIM_ONLY))]
 
 
 def correlation(df, cols, rows=200_000):
@@ -91,9 +91,10 @@ def show_groups(rho, cut):
     print(f"  plus {sum(len(g) == 1 for g in groups(rho, cut))} inputs alone")
 
 
-def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, together=None, cut_one=()):
+def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, together=None, cut_one=(),
+          observable_only=False):
     df = baselines.add_holt(models_main.add_lags(df, backs))
-    cols = inputs(df)
+    cols = inputs(df, observable_only)
     rho = correlation(df, cols)
     found = groups(rho, cut)
     print(f"\n== {len(found)} groups at cut {cut} (every pair inside has |rho| >= {1 - cut:.2f}) ==")
@@ -165,6 +166,7 @@ def selftest():
                              "noise": rng.normal(0, 1, T), TARGET: force})
 
     df = pd.concat([one_run(f"r{i}") for i in range(6)], ignore_index=True)
+    assert TARGET in inputs(df) and TARGET not in inputs(df, observable_only=True)  # --observable-only drops pressure
     rho = correlation(df, ["prev_inflow", "inflow_copy", "noise"])
     g = [sorted(x) for x in groups(rho, 0.2)]  # members come in column order
     assert ["inflow_copy", "prev_inflow"] in g and ["noise"] in g, g
@@ -211,6 +213,8 @@ def main():
     p.add_argument("--together", help="group numbers (from groups.csv) to drop all at once, e.g. 0,5,9; "
                                       "trains only all inputs and this set")
     p.add_argument("--cut-one", default="", help="with --together: also cut these groups to one member, as a second row")
+    p.add_argument("--observable-only", action="store_true",
+                   help="leave out force/pressure/time-over-threshold inputs (as force_model.py --observable-only)")
     p.add_argument("--out-dir", type=Path, default=Path("fm_groups"))
     background.stop_requested()
     background.add_args(p)
@@ -220,7 +224,7 @@ def main():
         p.error("--back needs at least one look-back above 0; these are the models with history")
     if args.groups_only:
         df = models_main.add_lags(load_data(args.data), backs)
-        rho = correlation(df, inputs(df))
+        rho = correlation(df, inputs(df, args.observable_only))
         for cut in CUTS:
             print(f"\n== cut {cut}: every pair inside a group has |rho| >= {1 - cut:.2f} ==")
             show_groups(rho, cut)
@@ -231,7 +235,8 @@ def main():
     background.start(args, args.out_dir / "run.log")
     nums = lambda s: [int(x) for x in s.split(",") if x.strip()]
     sweep(load_data(args.data), backs, args.window, args.out_dir, args.cut, args.cv, args.threshold,
-          args.models.split(",") if args.models else None, nums(args.together or ""), nums(args.cut_one))
+          args.models.split(",") if args.models else None, nums(args.together or ""), nums(args.cut_one),
+          args.observable_only)
     results.zip_up(args.out_dir)
 
 

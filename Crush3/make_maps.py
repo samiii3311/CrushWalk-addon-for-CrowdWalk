@@ -21,7 +21,7 @@ with new crowd data, while --holdout-map tests maps it never saw. The five famil
   tree        branching egress: 2-3 levels of branches merging toward one narrow exit
 
 Not in the default (--families randnet): randnet, a random street network (random_net.py),
-kept for the unseen-map test.
+kept for the unseen-map test; bridge, two crowds meeting head-on on a narrow bridge (own database).
 
 Random per map: link lengths, widths, bottleneck width, feeder count/angles,
 tree shape. Random per run, in gen.json: the total agent count (inflow surge), each spawn
@@ -61,7 +61,7 @@ sys.path.insert(0, str(HERE))
 from link_context import parse_json_c, parse_links, read_json_c  # noqa: E402
 
 FAMILIES = ["corridor", "funnel", "tjunction", "crossroads", "tree"]
-EXTRA_FAMILIES = ["randnet"]  # not in the default: random street networks for the unseen-map test (random_net.py)
+EXTRA_FAMILIES = ["randnet", "bridge"]  # not in the default: random street networks for the unseen-map test (random_net.py); head-on bridge crowds (own database)
 
 
 class MapBuilder:
@@ -215,6 +215,25 @@ def tree(r):
 def randnet(r):
     import random_net
     return random_net.build(r, MapBuilder())
+
+
+def bridge(r):
+    """Head-on crowds (Akashi 2001-like): two open areas joined by a narrow bridge; the west crowd walks
+    to the east exit and the east crowd to the west exit, so they meet on the bridge (the bottleneck)."""
+    m = MapBuilder()
+    W, wb = r.uniform(6, 12), r.uniform(2, 6)
+    La, Lb, Ls = r.uniform(30, 80), r.uniform(40, 120), r.uniform(60, 150)
+    jw, a = m.node(0, 0), m.node(La, 0)
+    b, je = m.node(La + Lb, 0), m.node(2 * La + Lb, 0)
+    m.link(m.node(-Ls, 15), jw, W, "SpawnW")
+    m.link(jw, m.node(-Ls, -15, "GoalW"), W)
+    m.link(jw, a, W)
+    m.link(a, b, wb)
+    m.link(b, je, W)
+    m.link(m.node(je["x"] + Ls, 15), je, W, "SpawnE")
+    m.link(je, m.node(je["x"] + Ls, -15, "GoalE"), W)
+    return m, [("SpawnW", "GoalE"), ("SpawnE", "GoalW")], {"two_way": True, "bottleneck_width": round(wb, 3),
+                                                           "bridge_length": round(Lb, 3), "approach_width": round(W, 3)}
 
 
 def add_walls(m, r, share):

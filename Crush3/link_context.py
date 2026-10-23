@@ -149,6 +149,10 @@ def neighbor_pairs(arcs):
 def add_context(df, links):
     links = links.assign(link_id=links.link_id.astype(str))
     df = df.assign(link_id=df.link_id.astype(str))
+    # 0.1 m entry/exit links at two-way crossroads ends (make_maps.py) are not walkways: drop them, so
+    # the arm they hang off looks like any other arm end (no upstream/downstream link)
+    v = links.link_tags.str.split(";").apply(lambda ts: bool({"Entry", "Exit"} & set(ts)))
+    df, links = df[~df.link_id.isin(set(links.link_id[v]))], links[~v]
     unknown = set(df.link_id) - set(links.link_id)
     if unknown:
         print(f"[!] {len(unknown)} link_ids in the CSV are not in Map.xml, e.g. {sorted(unknown)[:3]}")
@@ -236,6 +240,12 @@ def selftest():
     b1 = out.loc[(1, "b")]                          # neighbors empty at tick 1
     assert b1.prev_inflow == 0 and b1.next_density == 0
     assert out.loc[(0, "a")].prev_link_count == 0   # spawn link has no upstream
+    # a 0.1 m Entry link feeding a (two-way crossroads end) is dropped: no rows, a still has no upstream
+    le = pd.concat([links, pd.DataFrame({"link_id": ["e"], "from_node": ["0"], "to_node": ["1"], "length": [0.1],
+                                         "width": [4.0], "link_tags": ["Entry"]})])
+    de = pd.concat([df, pd.DataFrame({TICK: [0], "link_id": ["e"], "agent_count": [50], "mean_speed": [0.0], FORCE: [0.0]})])
+    oe = add_context(de, le)
+    assert "e" not in set(oe.link_id) and (oe[oe.link_id == "a"].prev_link_count == 0).all()
 
     # two-way: a: 1->2, d: 5->3, c: 3->4, and x: 2->3 with 5 agents forward at 0.4 m/s
     # and 15 backward (3->2) at 0.8 m/s -- logged as the link logger would average them

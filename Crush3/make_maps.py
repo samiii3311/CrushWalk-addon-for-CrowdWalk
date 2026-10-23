@@ -158,6 +158,9 @@ def tjunction(r):
     return m, [("Spawn", "GOAL")], {"arm_width": W, "stem_width": ws, "bottleneck_width": ws}
 
 
+V_LINK = 0.1  # m, entry and exit links at a two-way crossroads end (one step each)
+
+
 def crossroads(r):
     m = MapBuilder()
     two_way = r.random() < 0.5
@@ -172,10 +175,11 @@ def crossroads(r):
     for d in dirs:
         if two_way or d in ("W", "S"):
             widths[d] = max(widths[d], 2.0)
+    ends = []
     for d, (dx, dy) in dirs.items():
         L, stub = r.uniform(50, 150), r.uniform(20, 40)
         inner = m.node(dx * L, dy * L)
-        outer = m.node(dx * (L + stub), dy * (L + stub), f"Goal{d}")
+        outer = m.node(dx * (L + stub), dy * (L + stub), None if two_way else f"Goal{d}")
         spawning = two_way or d in ("W", "S")
         if spawning:  # arm + stub point toward the center (walking direction for one-way)
             m.link(outer, inner, widths[d], f"Spawn{d}")
@@ -183,6 +187,17 @@ def crossroads(r):
         else:
             m.link(c, inner, widths[d])
             m.link(inner, outer, widths[d])
+        ends.append((d, dx, dy, outer))
+    # Two-way: each arm end is where one group enters and another leaves. On one node, people waiting
+    # to enter stood at position 0 of the arm and blocked the leaving crowd (11,793 N, 2026-10-23).
+    # Now the end splits in a V into an entry node and an exit node, each on a 0.1 m link (Entry/Exit,
+    # left out of the dataset by link_context.py): one step in, one step out. Added after all arms, so
+    # the arms' IDs and the wall draws on them stay as they were.
+    for d, dx, dy, o in ends if two_way else []:
+        h = V_LINK / math.sqrt(2)
+        spawn = m.node(o["x"] + h * (dx - dy), o["y"] + h * (dy + dx), f"Spawn{d}_in")
+        m.link(spawn, o, widths[d], "Entry")
+        m.link(o, m.node(o["x"] + h * (dx + dy), o["y"] + h * (dy - dx), f"Goal{d}"), widths[d], "Exit")
     groups = ([("SpawnW", "GoalE"), ("SpawnE", "GoalW"), ("SpawnN", "GoalS"), ("SpawnS", "GoalN")] if two_way
               else [("SpawnW", "GoalE"), ("SpawnS", "GoalN")])
     return m, groups, {"two_way": two_way, "bottleneck_width": min(widths.values()),
@@ -241,7 +256,7 @@ def add_walls(m, r, share):
     per link at every share: maps are unchanged at share 0, and a higher share only adds walls."""
     for l in m.links:
         u, side = r.random(), r.random()
-        if u < share:
+        if u < share and not {"Entry", "Exit"} & set(l["tags"]):
             l["tags"].append("WALL2" if side < 0.5 else "WALL1")
 
 
@@ -345,7 +360,8 @@ def generate(out, n, seed, template, log_root, families=FAMILIES, runs_per_map=1
                 for t in l["tags"]:
                     if t.startswith("Spawn"):
                         spawn_width[t] = spawn_width.get(t, 0) + l["width"]
-                        by_id[l["from"]]["tags"].append(t + "_in")
+                        if len(by_id[l["from"]]["links"]) == 1:  # V ends already tag their entry node
+                            by_id[l["from"]]["tags"].append(t + "_in")
             mparams["walled_links"] = sum(any(t.startswith("WALL") for t in l["tags"]) for l in m.links)
             (out / name).mkdir(exist_ok=True)
             (out / name / "Map.xml").write_text(m.xml(), encoding="utf-8")
@@ -431,7 +447,9 @@ def selftest():
             assert g["startPlace"].endswith("_in") and not links.link_tags.str.contains(g["startPlace"]).any()
             spawn = links[links.link_tags.str.split(";").apply(lambda ts: g["startPlace"][:-3] in ts)]
             starts = {n.get("id") for n in nodes.values() if g["startPlace"] in [t.text for t in n.iter("tag")]}
-            assert len(spawn) and starts == set(spawn.from_node) and all(len(adj[s]) == 1 for s in starts), (row["run"], g)
+            entry = links[(links.link_tags == "Entry") & links.to_node.isin(spawn.from_node)]
+            assert len(spawn) and starts == set(entry.from_node if len(entry) else spawn.from_node) \
+                and all(len(adj[s]) == 1 for s in starts), (row["run"], g)
             assert g["goal"] in node_tags, (row["run"], g)
             seen, todo = set(), [spawn.iloc[0].to_node]
             while todo:
@@ -452,6 +470,13 @@ def selftest():
         goals = {n.get("id") for n in ET.parse(out / row["map"] / "Map.xml").getroot().iter("Node")
                  if any(t.text.startswith(("GOAL", "Goal")) for t in n.iter("tag"))}
         assert set(links.from_node) | goals == set(links.from_node) | set(links.to_node), row["map"]
+    # two-way crossroads: every arm end is a V, 0.1 m entry link (start node) + 0.1 m exit link (goal node);
+    # one-way crossroads and other families have none
+    for row in rows:
+        links = parse_links(out / row["map"] / "Map.xml")
+        v = links[links.link_tags.isin(["Entry", "Exit"])]
+        assert len(v) == (8 if row["family"] == "crossroads" and row["two_way"] else 0), row["map"]
+        assert (abs(v.length - V_LINK) < 0.002).all(), row["map"]
     # no single-file spawn arm in crossroads
     assert all(row[f"width_{d}"] >= 2.0 for row in rows if row["family"] == "crossroads"
                for d in ("WENS" if row["two_way"] else "WS"))

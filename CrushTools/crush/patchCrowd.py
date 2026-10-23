@@ -9,7 +9,7 @@ Steps:
   1. ../logger/patchLogger.py: the agent and link loggers (Java). That file alone is enough for logging only.
   2. Crush Java: ghost agents (AgentBase, WalkAgent), crushed-agent log and count (AgentHandler),
      crushed numbers in the status line (EvacuationSimulator, BasicSimulationLauncher).
-  3. Crush Ruby fixes 9-27 in Crush3/*.rb (RUBY_FIXES), if missing.
+  3. Crush Ruby fixes 9-28 in Crush3/*.rb (RUBY_FIXES), if missing.
 Safe to run twice: each change is skipped when its marker is already in the file.
 """
 
@@ -904,6 +904,50 @@ RUBY_FIXES = {
          "      @time_over_threshold = @crush_recover > 0.0 ? [@time_over_threshold - @crush_recover * currentTime.getTickUnit(), 0.0].max : 0.0"
          "  # SINGLELANE:crushclock\n"
          "    end\n"),
+    ],
+    # Fix 28 (2026-10-23, user): at a two-way crossroads end one group entered and another left by the
+    # same node; people waiting to enter stood at position 0 of the arm and blocked the leaving crowd
+    # (11,793 N). make_maps.py now splits the end in a V (0.1 m Entry and Exit links). People wait on
+    # the Entry link and step onto the arm under the fix 20 rule, counted on the arm.
+    # Added beside fix 20, not inside it, so a second patcher run still finds fix 20 whole.
+    "vgate": [
+        ("Crush3/CrushAgent.rb",
+         "    _speed = 0.0 if @entry_gate > 0.0 && entry_blocked?(currentTime)  # SINGLELANE:entrygate\n",
+         "    _speed = 0.0 if @entry_gate > 0.0 && entry_blocked?(currentTime)  # SINGLELANE:entrygate\n"
+         "    _speed = 0.0 if @entry_gate > 0.0 && v_entry_blocked?(currentTime)  # SINGLELANE:vgate\n"),
+        ("Crush3/CrushAgent.rb",
+         "  # SINGLELANE:entrygate -- fix 20: people placed on a spawn node (position 0) have no contacts and\n",
+         "  # SINGLELANE:vgate -- fix 28: at a two-way crossroads end (make_maps.py V) people start on a 0.1 m\n"
+         "  # Entry link. They wait there, off the arm, so the crowd leaving by the Exit link gets past\n"
+         "  # (11,793 N when both used one node, 2026-10-23), and step onto the arm only while its first\n"
+         "  # entryGateLength m have room: the fix 20 rule, counted on the arm.\n"
+         "  def v_entry_blocked?(currentTime)\n"
+         "    place = @javaAgent.currentPlace\n"
+         "    return false if place.getAdvancingDistance() > 0.0\n"
+         "    entry = place.getLink()\n"
+         '    return false unless entry.hasTag("Entry")\n'
+         "    node = place.getHeadingNode()\n"
+         "    arm = nil\n"
+         '    node.getLinks().each { |l| arm = l if l.hasSubTag("Spawn") }\n'
+         "    return false if arm.nil?\n"
+         "    dirs = Java::NodagumiAnanPJNetworkMapLink::MapLink::Direction\n"
+         "    dir = arm.isForwardDirectionFrom(node) ? dirs::Forward : dirs::Backward\n"
+         "    tick = currentTime.getRelativeTime().to_i\n"
+         "    slot = @@gate[entry.ID]\n"
+         "    if slot.nil? || slot[0] != tick\n"
+         "      inside = 0\n"
+         "      arm.getLane(dir).each do |agent|\n"
+         "        break if agent.currentPlace.getAdvancingDistance() >= @entry_gate\n"
+         "        inside += 1\n"
+         "      end\n"
+         "      slot = @@gate[entry.ID] = [tick, arm.getLaneWidth(dir) * @entry_gate / @ps_min - inside]\n"
+         "    end\n"
+         "    return true if slot[1] < 1.0\n"
+         "    slot[1] -= 1.0\n"
+         "    false\n"
+         "  end\n"
+         "\n"
+         "  # SINGLELANE:entrygate -- fix 20: people placed on a spawn node (position 0) have no contacts and\n"),
     ],
 }
 

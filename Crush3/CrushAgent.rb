@@ -182,6 +182,7 @@ class CrushAgent < RubyAgentBase
     _speed = 0.0 if @is_crushed  # SINGLELANE:stillbody -- a crushed body stays where it fell
     _speed = [_speed, @desired_empty_speed * @body_step_factor].min if @on_body && !@is_crushed  # SINGLELANE:stepover
     _speed = 0.0 if @entry_gate > 0.0 && entry_blocked?(currentTime)  # SINGLELANE:entrygate
+    _speed = 0.0 if @entry_gate > 0.0 && v_entry_blocked?(currentTime)  # SINGLELANE:vgate
 
     telemetry_data = {
       pressure: @last_crush_pressure,
@@ -199,6 +200,36 @@ class CrushAgent < RubyAgentBase
     TelemetryHandler.update_telemetry(@javaAgent, telemetry_data, currentTime)
 
     return _speed
+  end
+
+  # SINGLELANE:vgate -- fix 28: at a two-way crossroads end (make_maps.py V) people start on a 0.1 m
+  # Entry link. They wait there, off the arm, so the crowd leaving by the Exit link gets past
+  # (11,793 N when both used one node, 2026-10-23), and step onto the arm only while its first
+  # entryGateLength m have room: the fix 20 rule, counted on the arm.
+  def v_entry_blocked?(currentTime)
+    place = @javaAgent.currentPlace
+    return false if place.getAdvancingDistance() > 0.0
+    entry = place.getLink()
+    return false unless entry.hasTag("Entry")
+    node = place.getHeadingNode()
+    arm = nil
+    node.getLinks().each { |l| arm = l if l.hasSubTag("Spawn") }
+    return false if arm.nil?
+    dirs = Java::NodagumiAnanPJNetworkMapLink::MapLink::Direction
+    dir = arm.isForwardDirectionFrom(node) ? dirs::Forward : dirs::Backward
+    tick = currentTime.getRelativeTime().to_i
+    slot = @@gate[entry.ID]
+    if slot.nil? || slot[0] != tick
+      inside = 0
+      arm.getLane(dir).each do |agent|
+        break if agent.currentPlace.getAdvancingDistance() >= @entry_gate
+        inside += 1
+      end
+      slot = @@gate[entry.ID] = [tick, arm.getLaneWidth(dir) * @entry_gate / @ps_min - inside]
+    end
+    return true if slot[1] < 1.0
+    slot[1] -= 1.0
+    false
   end
 
   # SINGLELANE:entrygate -- fix 20: people placed on a spawn node (position 0) have no contacts and

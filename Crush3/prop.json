@@ -25,7 +25,7 @@
     "fields": ["push_force", "social_force", "compression_pressure", "raw_pressure", "time_over_threshold", "link_direction", "speed_fwd", "speed_bwd"]
     },
     "crushThreshold":1112.0,  // N, Kroll et al. 2017
-    "pressureTransfer":0.97,   // share of received pressure passed on per person (1 = full, A->B->C). Calibration choice, no source: sets the pressure ceiling of a queue, about 1,090 N at 0.95 (never crushes), about 2,000 N at 0.97. See PHYSICS_NOTES.md
+    "pressureTransfer":0.99,   // share of received pressure passed on per row (1 = full). Calibration choice, no source; 0.99 with the position-based chain (fix 24, tuned 2026-10-22; was 0.97 with the per-person chain). See PHYSICS_TUNING_LOG.md
     "wallPressureTransfer": 1.0, // walls: share passed on along a link with walls on both sides (WALL2; WALL1 = halfway). 1.0 = a wall leaks nothing (user, 2026-10-21, from the wall test: 2-wall peak 5507 N ~ Itaewon estimate); no measured source
     "contactBraking":true,    // SFM repulsion also from people ahead within contact range (false = old behaviour)
     "crushMargin":50.0,      // N; once over crushThreshold, keeps counting down to crushThreshold - crushMargin
@@ -39,6 +39,21 @@
     "pushFadeTime":60.0,      // fix 13 A: s for the push to fade while touching the person ahead (placeholder)
     "pushResidual":0.9,       // fix 13 A: push share left after fading; 1 = off (tuned 2026-10-21; code default 0.2)
     "pushRecoverRate":1.0,    // fix 15: how fast the fade recovers after a gap opens (x build-up rate); huge = instant reset
+    "personalSpaceMin":0.36,  // fix 19: m, spacing at standstill (Seyfried et al. 2005: 0.36 m + 1.06 s x v)
+    "personalSpaceSlope":1.06, // fix 19: s, growth of spacing with speed (Seyfried et al. 2005)
+    "personalSpaceMax":1.42,  // fix 21: m, spacing stops growing here (Seyfried's line was fitted up to 1 m/s)
+    "entryGateLength":1.0,    // fix 20: m at a spawn link's start that must have room before someone enters; 0 = off
+    "laneWidth":0.55,         // fix 22: m per pseudo-lane (body width ~0.5-0.6 m, Fruin); CrowdWalk's own is 1.0 m
+    "widthUnit_SameLane":0.495,  // fix 22: side distance between people abreast in one direction (0.9 x laneWidth)
+    "widthUnit_OtherLane":0.495, // fix 22: side distance to oncoming people (0.9 x laneWidth)
+    "bandPressure":1,         // fix 24: pressure from position along the link (rows of bandLength); 0 = old per-person chain
+    "frontPushShare":0.6,     // fix 24: share of a push passed backwards from the front (tuned 2026-10-22, no source)
+    "squeezeSum":1,           // fix 24: squeeze = push from behind + from the front (both at once), 0 = the larger one
+    "bandGap":1.0,            // fix 24: m, widest gap the push chain bridges
+    "counterPushShare":1,     // fix 25: oncoming people push back like the braking they cause; 0 = off
+    "laneSpeedWeight":1,      // fix 26: walking lanes split by speed, so a standing queue doesn't block the other side; 0 = CrowdWalk split
+    "laneHold":60.0,          // fix 26: s before a direction's lane count may rise again (drops at once; user, 2026-10-23)
+    "crushRecover":2.0,       // fix 27: crush clock winds down this many s per s of relief; 0 = reset to 0 (chosen by crush rate, no source)
     "simulation_step_time": 1,
     "show_background_map": true,
     "agent_size": 5.0,

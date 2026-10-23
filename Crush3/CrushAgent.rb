@@ -54,6 +54,15 @@ class CrushAgent < RubyAgentBase
     @pusher_id = nil
     mass_term = ItkTerm.getArg(@fallback, "mass")
     @my_mass = mass_term ? mass_term.getDouble() : 60.0
+    # SINGLELANE:bands -- fix 24, see band_table. 0 = old per-person chain
+    @band_on = props.getDouble("bandPressure", 0.0) > 0.0
+    @band_len = props.getDouble("bandLength", 0.36)  # one row of people at jam spacing
+    @front_share = props.getDouble("frontPushShare", 0.0)  # share of a push passed backwards
+    @squeeze_sum = props.getDouble("squeezeSum", 0.0) > 0.0  # squeeze = push from behind + front, not the larger
+    @band_gap = props.getDouble("bandGap", -1.0)  # widest gap the chain bridges; < 0 = physicalSpace
+    @counter_share = props.getDouble("counterPushShare", 0.0)  # SINGLELANE:counter -- fix 25, 0 = off
+    @lane_speed = props.getDouble("laneSpeedWeight", 0.0) > 0.0  # SINGLELANE:lanesplit -- fix 26, 0 = CrowdWalk split
+    @lane_hold = props.getDouble("laneHold", 0.0)  # SINGLELANE:lanesplit -- s before a lane count may rise again
     PhysicsBlackboard.instance.log_mass(getAgentId(), @my_mass)
 
     @body_drag_coefficient = props.getDouble("bodyDrag", 0.5 * @my_mass * 9.8)
@@ -80,6 +89,7 @@ class CrushAgent < RubyAgentBase
     # Hysteresis: once the timer has started, dips down to crushThreshold - crushMargin
     # still count as sustained, so small force jitter doesn't reset it.
     @crush_margin = props.getDouble("crushMargin", 50.0)
+    @crush_recover = props.getDouble("crushRecover", 0.0)  # SINGLELANE:crushclock -- s off per s of relief, 0 = reset
     @time_over_threshold = 0.0
 
     space_term = ItkTerm.getArg(@fallback, "physicalSpace")
@@ -221,6 +231,7 @@ class CrushAgent < RubyAgentBase
   end
 
   def calcSpeedBody(previousSpeed, currentTime, speed_factor)
+    @@lane_tick = currentTime.getRelativeTime().to_i  # SINGLELANE:lanesplit
     # Scale default link empty speed by the agent's individual factor
     @desired_empty_speed = getEmptySpeed() * speed_factor
     baseSpeed = @javaAgent.currentPlace.getLink().calcEmptySpeedForAgent(@desired_empty_speed, @javaAgent, currentTime)
@@ -367,6 +378,7 @@ class CrushAgent < RubyAgentBase
     @on_body = false  # SINGLELANE:stepover
     @body_near = false  # SINGLELANE:bodybreak
     return [[], [], 0.0] if @javaAgent.isGhost()
+    @counter_push = 0.0  # SINGLELANE:counter
 
     #first instance
     physicalAgent = []
@@ -398,7 +410,7 @@ class CrushAgent < RubyAgentBase
 
       # --- COUNTER FLOW (Other Lane) ---
       otherLane = virtualPlace.getOtherLane()
-      laneWidthOther = virtualPlace.getOtherLaneWidth()
+      laneWidthOther = lane_widths(virtualPlace)[1]  # SINGLELANE:lanesplit
       insensitivePos = 0.0
 
       (otherLane.size() - 1).downto(0) do |i|
@@ -423,12 +435,18 @@ class CrushAgent < RubyAgentBase
         dy = @widthUnit_OtherLane * (((laneWidthOther - (countOther % laneWidthOther)) % laneWidthOther) + 1)
 
         add_neighbor(physicalAgent, socialAgent, { agent: agent, dx: dx, dy: dy })
+        if @counter_share > 0.0 && dx > 0.0  # SINGLELANE:counter -- their push, weighted like the braking
+          dist = Math.sqrt(dx**2 + dy**2)
+          bb = PhysicsBlackboard.instance
+          w = [(dx / dist) * Math.exp(@a2 * (@ps_min - dist)), 1.0].min
+          @counter_push += @counter_share * (bb.get_drive(agent.getID()) + bb.get_pressure(agent.getID())) * w
+        end
 
         insensitivePos = agentPos + @insDist if countOther % laneWidthOther == 0
       end
 
       # --- FORWARD FLOW (Same Lane) ---
-      laneWidth = virtualPlace.getLaneWidth()
+      laneWidth = lane_widths(virtualPlace)[0]  # SINGLELANE:lanesplit
       myTurnIsOver = false
       behind = []
 
@@ -534,7 +552,7 @@ class CrushAgent < RubyAgentBase
       @last_crush_pressure = 0.0
       @last_raw_pressure = 0.0
       PhysicsBlackboard.instance.log_pressure(getAgentId(), 0.0)
-      @time_over_threshold = 0.0  # no contact -> pressure released
+      @time_over_threshold = @crush_recover > 0.0 ? [@time_over_threshold - @crush_recover * currentTime.getTickUnit(), 0.0].max : 0.0  # SINGLELANE:crushclock -- no contact -> pressure released
       return 0.0
     end
     @@dbg_physical_nonempty += 1
@@ -606,12 +624,18 @@ class CrushAgent < RubyAgentBase
       end
     end
 
+    if @band_on  # SINGLELANE:bands -- replaces the per-person chain for the squeeze
+      pressure_from_behind, pressure_from_front = band_pressure(currentTime)
+    end
     room = [[(@back_room || 0.0), 0.0].max / @back_step, 1.0].min  # SINGLELANE:squeeze
     walked = [(@prev_speed || 0.0) * currentTime.getTickUnit(), (@front_gap || 0.0)].min
     room_ahead = [[walked, 0.0].max / @back_step, 1.0].min
     raw_crush_pressure = [pressure_from_behind * (1.0 - 0.5 * room_ahead),
                           pressure_from_front * (1.0 - 0.5 * room)].max
     @@dbg_max_raw_pressure = raw_crush_pressure if raw_crush_pressure > @@dbg_max_raw_pressure
+    if @band_on && @squeeze_sum  # SINGLELANE:bands -- squeezed from both sides at once
+      raw_crush_pressure = pressure_from_behind * (1.0 - 0.5 * room_ahead) + pressure_from_front * (1.0 - 0.5 * room)
+    end
     @last_raw_pressure = raw_crush_pressure
     # Only what came from behind is passed on to the agent in front. Passing on the total sent a
     # push from the front straight back to the front, where the forward chain multiplied it again.
@@ -657,7 +681,7 @@ class CrushAgent < RubyAgentBase
     if final_crush_pressure > active_threshold && pinned
       @time_over_threshold += currentTime.getTickUnit()
     else
-      @time_over_threshold = 0.0
+      @time_over_threshold = @crush_recover > 0.0 ? [@time_over_threshold - @crush_recover * currentTime.getTickUnit(), 0.0].max : 0.0  # SINGLELANE:crushclock
     end
     if @crush_spread  # SINGLELANE:tolerance -- the ID is set by now (in initialize it was not: all agents drew the same)
       @crush_duration += @crush_spread * Random.new(Digest::MD5.hexdigest("#{@crush_seed}-#{getAgentId()}").to_i(16)).rand
@@ -671,6 +695,124 @@ class CrushAgent < RubyAgentBase
 
     #F = m*a => a = F/m
     return net_force_x / @my_mass
+  end
+
+  # SINGLELANE:lanesplit -- fix 26 (2026-10-23): CrowdWalk splits a link's width between the two
+  # directions by headcount, people standing still included, so a waiting queue took the lanes the
+  # other side needed to get off (head-on gridlock up to 3 h on bridge maps). With laneSpeedWeight the
+  # WALKING split counts each person by speed / own free speed (a stopped queue claims ~no lanes, all
+  # stopped -> even); the PRESSURE split (band_table) keeps headcount, since a standing queue still
+  # fills the width. laneHold (user): a lane count drops at once but rises only laneHold s after its
+  # last change, so lanes don't flicker 2-3-2. Off = CrowdWalk's MapLink.getLaneWidth.
+  # ponytail: CrowdWalk's laneShareDiffuser sight cap is ignored (runs use 1.0).
+  @@lanes = {}
+  @@held = {}
+  @@lane_tick = -1
+  def lane_widths(place, walk = true)
+    return [place.getLaneWidth(), place.getOtherLaneWidth()] unless @lane_speed
+    link = place.getLink()
+    key = "#{link.ID}:#{walk}"
+    c = @@lanes[key]
+    c = @@lanes[key] = [@@lane_tick, held_split(key, lane_split(link, walk))] if c.nil? || c[0] != @@lane_tick
+    place.isForwardDirection() ? c[1] : c[1].reverse
+  end
+
+  def held_split(key, s)
+    return s unless @lane_hold > 0.0
+    h = @@held[key] ||= [s.dup, [-1.0e9, -1.0e9]]
+    [0, 1].each do |d|
+      next if s[d] == h[0][d]
+      next if s[d] > h[0][d] && @@lane_tick - h[1][d] < @lane_hold
+      h[0][d] = s[d]
+      h[1][d] = @@lane_tick
+    end
+    h[0].dup
+  end
+
+  # [forward lanes, backward lanes]: share of width / dWidth by (speed-weighted) headcount, at least 1
+  def lane_split(link, walk)
+    n = [0, 0]
+    w = [0.0, 0.0]
+    link.getAgents().each do |a|
+      d = a.isForwardDirection() ? 0 : 1
+      n[d] += 1
+      w[d] += walk ? walk_weight(a) : 1.0
+    end
+    w = n.map { |x| x > 0 ? 1.0 : 0.0 } if w.sum <= 0.0  # all stopped -> even
+    return [1, 1] if w.sum <= 0.0
+    total = link.getWidth() / Java::NodagumiAnanPJNetworkMapLink::MapLink.dWidth
+    w.map { |x| [(x * total / w.sum).to_i, 1].max }
+  end
+
+  def walk_weight(a)  # share of own free walking speed, 0..1
+    e = a.getEmptySpeed()
+    e > 0.0 ? [[a.getSpeed() / e, 0.0].max, 1.0].min : 1.0
+  end
+
+  # SINGLELANE:bands -- fix 24 (2026-10-22): once per link, direction and tick, cut the lane into
+  # bandLength strips along the link (one row of people at jam spacing). Back walk: each strip passes
+  # transfer x what it got + its people's push to the strip ahead; front walk: the same backwards with
+  # frontPushShare x push. A gap wider than bandGap breaks the chain; a strip holding a body passes only
+  # bodyPassShare. Each person gets their strip's force / number of lanes (the old 1/laneWidth share).
+  # SINGLELANE:counter -- fix 25 (2026-10-22, user): oncoming people push back like the braking they
+  # cause (search). That push is carried backwards along the chain as the largest one carried, not a
+  # sum: a sum built 7,400-15,078 N peaks and made pressure flicker to 0 and back (tuning log).
+  # ponytail: chain stops at link ends (the old rule did too); join links if jams span them.
+  @@bands = {}
+  @@counter = {}
+  def band_pressure(currentTime)
+    place = @javaAgent.currentPlace
+    tick = currentTime.getRelativeTime().to_i
+    key = "#{place.getLink().ID}:#{@javaAgent.isForwardDirection()}"
+    @@counter[getAgentId()] = @counter_push || 0.0
+    c = @@bands[key]
+    c = @@bands[key] = [tick, band_table(place)] if c.nil? || c[0] != tick
+    v = c[1][getAgentId()] || [0.0, 0.0]
+    [v[0], v[1] + (@counter_push || 0.0)]  # my own counter push on top
+  end
+
+  def band_table(place)
+    bb = PhysicsBlackboard.instance
+    lanes = [lane_widths(place, false)[0], 1].max.to_f
+    transfer = link_transfer
+    bands = []  # [strip index, first pos, last pos, ids, push sum, body?, counter push sum], back to front
+    place.getLane().each do |a|
+      pos = a.currentPlace.getAdvancingDistance()
+      next if pos <= 0.0  # people waiting at the entry gate are off the map
+      body = a.hasTag("crushed")
+      next if a.isGhost() && !body
+      k = (pos / @band_len).floor
+      b = bands.last
+      bands << (b = [k, pos, pos, [], 0.0, false, 0.0]) if b.nil? || b[0] != k
+      b[2] = pos
+      if body
+        b[5] = true
+      else
+        b[3] << a.getID()
+        b[4] += bb.get_drive(a.getID())
+        b[6] += @@counter[a.getID()] || 0.0
+      end
+    end
+    gap = @band_gap < 0.0 ? @physicalSpace : @band_gap
+    n = bands.size
+    fb = Array.new(n, 0.0)
+    ff = Array.new(n, 0.0)
+    fc = Array.new(n, 0.0)
+    (1...n).each do |i|
+      prev = bands[i - 1]
+      next if bands[i][1] - prev[2] > gap
+      fb[i] = (transfer * fb[i - 1] + prev[4]) * (prev[5] ? @body_pass : 1.0)
+    end
+    (n - 2).downto(0) do |i|
+      nxt = bands[i + 1]
+      next if nxt[1] - bands[i][2] > gap
+      body = nxt[5] ? @body_pass : 1.0
+      ff[i] = (transfer * ff[i + 1] + @front_share * nxt[4]) * body
+      fc[i] = [transfer * fc[i + 1], transfer * nxt[6]].max * body
+    end
+    t = {}
+    bands.each_with_index { |b, i| b[3].each { |id| t[id] = [fb[i] / lanes, (ff[i] + fc[i]) / lanes] } }
+    t
   end
 
   def calcSocial(socialAgent, lowerBound, totalCrossingForce)

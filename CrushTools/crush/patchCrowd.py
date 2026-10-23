@@ -9,7 +9,7 @@ Steps:
   1. ../logger/patchLogger.py: the agent and link loggers (Java). That file alone is enough for logging only.
   2. Crush Java: ghost agents (AgentBase, WalkAgent), crushed-agent log and count (AgentHandler),
      crushed numbers in the status line (EvacuationSimulator, BasicSimulationLauncher).
-  3. Crush Ruby fixes 9 and 10 in Crush3/*.rb (stale second push, squeeze = bigger push), if missing.
+  3. Crush Ruby fixes 9-27 in Crush3/*.rb (RUBY_FIXES), if missing.
 Safe to run twice: each change is skipped when its marker is already in the file.
 """
 
@@ -703,11 +703,213 @@ RUBY_FIXES = {
          '        physicalAgent.concat(behind.max_by([laneWidth, 1].max) { |b| b[:dx] })\n'
          '      end\n'),
     ],
+    # Fixes 24-26 (2026-10-22/23, PHYSICS_TUNING_LOG.md), one entry because they share band_table.
+    # 24 bands: pressure from position along the link instead of who-pushes-whom (bandPressure).
+    # 25 counter: oncoming people push back like the braking they cause (counterPushShare).
+    # 26 lanesplit: walking lanes split by speed, so a standing queue no longer blocks the other
+    #    direction's way off a link (laneSpeedWeight, laneHold). All off by default.
+    # Every edit adds after the end of an earlier fix's text (or before its start), never inside it,
+    # so re-running stays a no-op.
+    "bands": [
+        ("Crush3/CrushAgent.rb",
+         "    @my_mass = mass_term ? mass_term.getDouble() : 60.0\n",
+         "    @my_mass = mass_term ? mass_term.getDouble() : 60.0\n"
+         "    # SINGLELANE:bands -- fix 24, see band_table. 0 = old per-person chain\n"
+         '    @band_on = props.getDouble("bandPressure", 0.0) > 0.0\n'
+         '    @band_len = props.getDouble("bandLength", 0.36)  # one row of people at jam spacing\n'
+         '    @front_share = props.getDouble("frontPushShare", 0.0)  # share of a push passed backwards\n'
+         '    @squeeze_sum = props.getDouble("squeezeSum", 0.0) > 0.0  # squeeze = push from behind + front, not the larger\n'
+         '    @band_gap = props.getDouble("bandGap", -1.0)  # widest gap the chain bridges; < 0 = physicalSpace\n'
+         '    @counter_share = props.getDouble("counterPushShare", 0.0)  # SINGLELANE:counter -- fix 25, 0 = off\n'
+         '    @lane_speed = props.getDouble("laneSpeedWeight", 0.0) > 0.0  # SINGLELANE:lanesplit -- fix 26, 0 = CrowdWalk split\n'
+         '    @lane_hold = props.getDouble("laneHold", 0.0)  # SINGLELANE:lanesplit -- s before a lane count may rise again\n'),
+        ("Crush3/CrushAgent.rb",
+         "  def calcSpeedBody(previousSpeed, currentTime, speed_factor)\n",
+         "  def calcSpeedBody(previousSpeed, currentTime, speed_factor)\n"
+         "    @@lane_tick = currentTime.getRelativeTime().to_i  # SINGLELANE:lanesplit\n"),
+        ("Crush3/CrushAgent.rb",
+         "    return [[], [], 0.0] if @javaAgent.isGhost()\n",
+         "    return [[], [], 0.0] if @javaAgent.isGhost()\n"
+         "    @counter_push = 0.0  # SINGLELANE:counter\n"),
+        ("Crush3/CrushAgent.rb",
+         "      laneWidthOther = virtualPlace.getOtherLaneWidth()\n",
+         "      laneWidthOther = lane_widths(virtualPlace)[1]  # SINGLELANE:lanesplit\n"),
+        ("Crush3/CrushAgent.rb",
+         "        add_neighbor(physicalAgent, socialAgent, { agent: agent, dx: dx, dy: dy })\n"
+         "\n"
+         "        insensitivePos = agentPos + @insDist if countOther % laneWidthOther == 0\n",
+         "        add_neighbor(physicalAgent, socialAgent, { agent: agent, dx: dx, dy: dy })\n"
+         "        if @counter_share > 0.0 && dx > 0.0  # SINGLELANE:counter -- their push, weighted like the braking\n"
+         "          dist = Math.sqrt(dx**2 + dy**2)\n"
+         "          bb = PhysicsBlackboard.instance\n"
+         "          w = [(dx / dist) * Math.exp(@a2 * (@ps_min - dist)), 1.0].min\n"
+         "          @counter_push += @counter_share * (bb.get_drive(agent.getID()) + bb.get_pressure(agent.getID())) * w\n"
+         "        end\n"
+         "\n"
+         "        insensitivePos = agentPos + @insDist if countOther % laneWidthOther == 0\n"),
+        ("Crush3/CrushAgent.rb",
+         "      laneWidth = virtualPlace.getLaneWidth()\n",
+         "      laneWidth = lane_widths(virtualPlace)[0]  # SINGLELANE:lanesplit\n"),
+        ("Crush3/CrushAgent.rb",
+         "    room = [[(@back_room || 0.0), 0.0].max / @back_step, 1.0].min  # SINGLELANE:squeeze\n",
+         "    if @band_on  # SINGLELANE:bands -- replaces the per-person chain for the squeeze\n"
+         "      pressure_from_behind, pressure_from_front = band_pressure(currentTime)\n"
+         "    end\n"
+         "    room = [[(@back_room || 0.0), 0.0].max / @back_step, 1.0].min  # SINGLELANE:squeeze\n"),
+        ("Crush3/CrushAgent.rb",
+         "    @@dbg_max_raw_pressure = raw_crush_pressure if raw_crush_pressure > @@dbg_max_raw_pressure\n",
+         "    @@dbg_max_raw_pressure = raw_crush_pressure if raw_crush_pressure > @@dbg_max_raw_pressure\n"
+         "    if @band_on && @squeeze_sum  # SINGLELANE:bands -- squeezed from both sides at once\n"
+         "      raw_crush_pressure = pressure_from_behind * (1.0 - 0.5 * room_ahead) + pressure_from_front * (1.0 - 0.5 * room)\n"
+         "    end\n"),
+        ("Crush3/CrushAgent.rb",
+         "  def calcSocial(socialAgent, lowerBound, totalCrossingForce)\n",
+         '''  # SINGLELANE:lanesplit -- fix 26 (2026-10-23): CrowdWalk splits a link's width between the two
+  # directions by headcount, people standing still included, so a waiting queue took the lanes the
+  # other side needed to get off (head-on gridlock up to 3 h on bridge maps). With laneSpeedWeight the
+  # WALKING split counts each person by speed / own free speed (a stopped queue claims ~no lanes, all
+  # stopped -> even); the PRESSURE split (band_table) keeps headcount, since a standing queue still
+  # fills the width. laneHold (user): a lane count drops at once but rises only laneHold s after its
+  # last change, so lanes don't flicker 2-3-2. Off = CrowdWalk's MapLink.getLaneWidth.
+  # ponytail: CrowdWalk's laneShareDiffuser sight cap is ignored (runs use 1.0).
+  @@lanes = {}
+  @@held = {}
+  @@lane_tick = -1
+  def lane_widths(place, walk = true)
+    return [place.getLaneWidth(), place.getOtherLaneWidth()] unless @lane_speed
+    link = place.getLink()
+    key = "#{link.ID}:#{walk}"
+    c = @@lanes[key]
+    c = @@lanes[key] = [@@lane_tick, held_split(key, lane_split(link, walk))] if c.nil? || c[0] != @@lane_tick
+    place.isForwardDirection() ? c[1] : c[1].reverse
+  end
+
+  def held_split(key, s)
+    return s unless @lane_hold > 0.0
+    h = @@held[key] ||= [s.dup, [-1.0e9, -1.0e9]]
+    [0, 1].each do |d|
+      next if s[d] == h[0][d]
+      next if s[d] > h[0][d] && @@lane_tick - h[1][d] < @lane_hold
+      h[0][d] = s[d]
+      h[1][d] = @@lane_tick
+    end
+    h[0].dup
+  end
+
+  # [forward lanes, backward lanes]: share of width / dWidth by (speed-weighted) headcount, at least 1
+  def lane_split(link, walk)
+    n = [0, 0]
+    w = [0.0, 0.0]
+    link.getAgents().each do |a|
+      d = a.isForwardDirection() ? 0 : 1
+      n[d] += 1
+      w[d] += walk ? walk_weight(a) : 1.0
+    end
+    w = n.map { |x| x > 0 ? 1.0 : 0.0 } if w.sum <= 0.0  # all stopped -> even
+    return [1, 1] if w.sum <= 0.0
+    total = link.getWidth() / Java::NodagumiAnanPJNetworkMapLink::MapLink.dWidth
+    w.map { |x| [(x * total / w.sum).to_i, 1].max }
+  end
+
+  def walk_weight(a)  # share of own free walking speed, 0..1
+    e = a.getEmptySpeed()
+    e > 0.0 ? [[a.getSpeed() / e, 0.0].max, 1.0].min : 1.0
+  end
+
+  # SINGLELANE:bands -- fix 24 (2026-10-22): once per link, direction and tick, cut the lane into
+  # bandLength strips along the link (one row of people at jam spacing). Back walk: each strip passes
+  # transfer x what it got + its people's push to the strip ahead; front walk: the same backwards with
+  # frontPushShare x push. A gap wider than bandGap breaks the chain; a strip holding a body passes only
+  # bodyPassShare. Each person gets their strip's force / number of lanes (the old 1/laneWidth share).
+  # SINGLELANE:counter -- fix 25 (2026-10-22, user): oncoming people push back like the braking they
+  # cause (search). That push is carried backwards along the chain as the largest one carried, not a
+  # sum: a sum built 7,400-15,078 N peaks and made pressure flicker to 0 and back (tuning log).
+  # ponytail: chain stops at link ends (the old rule did too); join links if jams span them.
+  @@bands = {}
+  @@counter = {}
+  def band_pressure(currentTime)
+    place = @javaAgent.currentPlace
+    tick = currentTime.getRelativeTime().to_i
+    key = "#{place.getLink().ID}:#{@javaAgent.isForwardDirection()}"
+    @@counter[getAgentId()] = @counter_push || 0.0
+    c = @@bands[key]
+    c = @@bands[key] = [tick, band_table(place)] if c.nil? || c[0] != tick
+    v = c[1][getAgentId()] || [0.0, 0.0]
+    [v[0], v[1] + (@counter_push || 0.0)]  # my own counter push on top
+  end
+
+  def band_table(place)
+    bb = PhysicsBlackboard.instance
+    lanes = [lane_widths(place, false)[0], 1].max.to_f
+    transfer = link_transfer
+    bands = []  # [strip index, first pos, last pos, ids, push sum, body?, counter push sum], back to front
+    place.getLane().each do |a|
+      pos = a.currentPlace.getAdvancingDistance()
+      next if pos <= 0.0  # people waiting at the entry gate are off the map
+      body = a.hasTag("crushed")
+      next if a.isGhost() && !body
+      k = (pos / @band_len).floor
+      b = bands.last
+      bands << (b = [k, pos, pos, [], 0.0, false, 0.0]) if b.nil? || b[0] != k
+      b[2] = pos
+      if body
+        b[5] = true
+      else
+        b[3] << a.getID()
+        b[4] += bb.get_drive(a.getID())
+        b[6] += @@counter[a.getID()] || 0.0
+      end
+    end
+    gap = @band_gap < 0.0 ? @physicalSpace : @band_gap
+    n = bands.size
+    fb = Array.new(n, 0.0)
+    ff = Array.new(n, 0.0)
+    fc = Array.new(n, 0.0)
+    (1...n).each do |i|
+      prev = bands[i - 1]
+      next if bands[i][1] - prev[2] > gap
+      fb[i] = (transfer * fb[i - 1] + prev[4]) * (prev[5] ? @body_pass : 1.0)
+    end
+    (n - 2).downto(0) do |i|
+      nxt = bands[i + 1]
+      next if nxt[1] - bands[i][2] > gap
+      body = nxt[5] ? @body_pass : 1.0
+      ff[i] = (transfer * ff[i + 1] + @front_share * nxt[4]) * body
+      fc[i] = [transfer * fc[i + 1], transfer * nxt[6]].max * body
+    end
+    t = {}
+    bands.each_with_index { |b, i| b[3].each { |id| t[id] = [fb[i] / lanes, (ff[i] + fc[i]) / lanes] } }
+    t
+  end
+
+  def calcSocial(socialAgent, lowerBound, totalCrossingForce)
+'''),
+    ],
+    # Fix 27 (2026-10-23, user): the crush clock reset to 0 on any short dip, so someone squeezed for
+    # 200 s got a full 240 s again after 1 s of relief. It now winds down crushRecover s per s of
+    # relief (0 = old reset). Breathing muscles tire under sustained load (Motomura et al. 2019, J Nippon
+    # Med Sch 86(6)); no measured recovery rate exists, k = 2 was chosen by the crush rate (11/36 runs).
+    "crushclock": [
+        ("Crush3/CrushAgent.rb",
+         '    @crush_margin = props.getDouble("crushMargin", 50.0)\n',
+         '    @crush_margin = props.getDouble("crushMargin", 50.0)\n'
+         '    @crush_recover = props.getDouble("crushRecover", 0.0)  # SINGLELANE:crushclock -- s off per s of relief, 0 = reset\n'),
+        ("Crush3/CrushAgent.rb",
+         "      @time_over_threshold = 0.0  # no contact -> pressure released\n",
+         "      @time_over_threshold = @crush_recover > 0.0 ? [@time_over_threshold - @crush_recover * currentTime.getTickUnit(), 0.0].max : 0.0"
+         "  # SINGLELANE:crushclock -- no contact -> pressure released\n"),
+        ("Crush3/CrushAgent.rb",
+         "    else\n      @time_over_threshold = 0.0\n    end\n",
+         "    else\n"
+         "      @time_over_threshold = @crush_recover > 0.0 ? [@time_over_threshold - @crush_recover * currentTime.getTickUnit(), 0.0].max : 0.0"
+         "  # SINGLELANE:crushclock\n"
+         "    end\n"),
+    ],
 }
 
 
 def apply_ruby_fixes():
-    """Adds fixes 9 to 11 to Crush3/*.rb. Skips an edit that is already there; stops if an anchor is missing."""
+    """Adds RUBY_FIXES to Crush3/*.rb. Skips an edit that is already there; stops if an anchor is missing."""
     for name, edits in RUBY_FIXES.items():
         for rel, find, repl in edits:
             path = REPO_DIR / rel

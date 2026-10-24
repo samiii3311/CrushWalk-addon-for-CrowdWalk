@@ -23,6 +23,7 @@ sweep.py's own graph plots warned_share, which came out near 100% for every wind
 Usage:
     python3 sweep_plot.py fm_sweep_1way/results.csv        # graphs go next to the csv
     python3 sweep_plot.py fm_extra/results.csv --models RandomForest,XGBoost,RF_history,XGB_history
+    python3 sweep_plot.py fm_r1_errorbars/results.csv --windows 120,300,600 --warning-max 250 --runs-max 190 --out-dir fm_r1_same_scale
     python3 sweep_plot.py --selftest
 """
 
@@ -60,7 +61,7 @@ def largest(res):
 
 
 def plot_data(plt, res, model, path, col="median_warning_s", scale=1, unit="s",
-              ylabel="Typical warning before an event (s)"):
+              ylabel="Typical warning before an event (s)", xmax=None, ymax=None):
     r = res[res.model == model].copy()
     for c in (col, f"{col}_lo", f"{col}_hi"):
         if c in r:
@@ -88,8 +89,8 @@ def plot_data(plt, res, model, path, col="median_warning_s", scale=1, unit="s",
     ax.set_xlabel("Crush runs used for training", fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)
     top = r[f"{col}_hi"].max() * 1.1 if ranges else 0
-    ax.set_ylim(0, 100 if unit == "%" else max(100, r[col].max() * 1.2, top))  # same scale as the bar graphs
-    ax.set_xlim(left=0)
+    ax.set_ylim(0, 100 if unit == "%" else ymax or max(100, r[col].max() * 1.2, top))  # same scale as the bar graphs
+    ax.set_xlim(0, xmax)
     if ranges:
         ax.text(0, -0.2, "Vertical lines: 95% range when the test runs are re-drawn at random.\n"
                          "Lines are shifted slightly sideways so the ranges can be told apart.",
@@ -102,7 +103,7 @@ def plot_data(plt, res, model, path, col="median_warning_s", scale=1, unit="s",
     print(f"graph: {path}")
 
 
-def plot_bars(plt, res, path, col, scale, title, ylabel):
+def plot_bars(plt, res, path, col, scale, title, ylabel, ymax=None):
     full = largest(res)
     full = full.assign(**{col: full[col] * scale})
     bars = f"{col}_lo" in full  # error_bars.py adds <col>_lo / <col>_hi: the 95% range, drawn as a line through the bar
@@ -128,7 +129,7 @@ def plot_bars(plt, res, path, col, scale, title, ylabel):
     ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
     ax.set_xlabel("Window (how far ahead the model looks)", fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)
-    ax.set_ylim(0, max(100, full[col].max() * 1.2, full[f"{col}_hi"].max() * scale * 1.1 if bars else 0))
+    ax.set_ylim(0, ymax or max(100, full[col].max() * 1.2, full[f"{col}_hi"].max() * scale * 1.1 if bars else 0))
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", color="#e4e4e2", lw=0.8)
     ax.set_axisbelow(True)
@@ -178,11 +179,18 @@ def main():
     p = argparse.ArgumentParser(description="Draw readable graphs from a sweep.py results.csv.")
     p.add_argument("results", type=Path, help="results.csv written by sweep.py")
     p.add_argument("--models", default=None, help="only these models, comma-separated (default: every model in the csv)")
+    # fixed scales, so graphs from two sweeps (e.g. old and new simulator) can be compared side by side
+    p.add_argument("--windows", default=None, help="only these windows in seconds, comma-separated (e.g. 120,300,600)")
+    p.add_argument("--warning-max", type=float, default=None, help="top of the warning-time scale in s (default: fits the data)")
+    p.add_argument("--runs-max", type=float, default=None, help="right end of the crush-runs scale (default: fits the data)")
+    p.add_argument("--out-dir", type=Path, default=None, help="write the graphs here instead of next to the csv")
     args = p.parse_args()
     args.results = results.find(args.results)  # a short name is looked up in the results folder
     res = pd.read_csv(args.results)
     if args.models:
         res = res[res.model.isin(args.models.split(","))]
+    if args.windows:
+        res = res[res.window_s.isin([int(w) for w in args.windows.split(",")])]
     show_numbers(res)
     try:
         import matplotlib
@@ -190,15 +198,16 @@ def main():
         import matplotlib.pyplot as plt
     except ImportError:
         sys.exit("matplotlib is not installed (pip install matplotlib); the numbers above are what would be plotted")
-    out = args.results.parent
+    out = results.new_dir(args.out_dir) if args.out_dir else args.results.parent  # a short name gets the dated results folder
+    out.mkdir(parents=True, exist_ok=True)
     for model in res.model.unique():
         if res[res.model == model].train_runs.nunique() > 1:  # one training size has no line to draw
-            plot_data(plt, res, model, out / f"sweep_data_{model}.png")
+            plot_data(plt, res, model, out / f"sweep_data_{model}.png", xmax=args.runs_max, ymax=args.warning_max)
             if "alarms_real_share" in res:
                 plot_data(plt, res, model, out / f"sweep_data_real_{model}.png", "alarms_real_share", 100, "%",
-                          "Alarms that were real (%)")
+                          "Alarms that were real (%)", xmax=args.runs_max)
     for name, bar in BARS.items():
-        plot_bars(plt, res, out / name, *bar)
+        plot_bars(plt, res, out / name, *bar, ymax=args.warning_max if bar[0] == "median_warning_s" else None)
     results.zip_up(out)
 
 

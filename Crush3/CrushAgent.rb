@@ -927,6 +927,29 @@ class CrushAgent < RubyAgentBase
     @javaAgent.setSpeed(0.0) if @javaAgent.respond_to?(:setSpeed)
   end
 
+  # SINGLELANE:lanefix -- fix 29, replaces fix 26's lane_split (Ruby keeps the later def)
+  def lane_split(link, walk)
+    n = [0, 0]
+    w = [0.0, 0.0]
+    link.getAgents().each do |a|
+      d = a.isForwardDirection() ? 0 : 1
+      n[d] += 1
+      w[d] += walk ? walk_weight(a) : 1.0
+    end
+    w = n.map { |x| x > 0 ? 1.0 : 0.0 } if w.sum <= 0.0  # all stopped -> even
+    return [1, 1] if w.sum <= 0.0
+    total = link.getWidth() / Java::NodagumiAnanPJNetworkMapLink::MapLink.dWidth
+    @lane_fix = getSimulator().getProperties().getDouble("laneSplitFix", 0.0) > 0.0 if @lane_fix.nil?
+    lanes = total.to_i
+    return w.map { |x| [(x * total / w.sum).to_i, 1].max } unless @lane_fix && lanes >= 2
+    base = n.map { |x| x > 0 ? 1 : 0 }
+    rest = lanes - base.sum
+    q = w.map { |x| x * rest / w.sum }
+    s = q.map(&:floor)
+    [0, 1].sort_by { |d| -(q[d] - s[d]) }.first(rest - s.sum).each { |d| s[d] += 1 }
+    [0, 1].map { |d| [base[d] + s[d], 1].max }  # an empty side keeps 1 unused lane, as before
+  end
+
   # --- Blackboard Integration ---
 
   def has_blackboard_hit?(aggressor_id, victim_id, currentTime)

@@ -949,6 +949,39 @@ RUBY_FIXES = {
          "\n"
          "  # SINGLELANE:entrygate -- fix 20: people placed on a spawn node (position 0) have no contacts and\n"),
     ],
+    # Fix 29 (2026-10-26, test only, off by default): fix 26's split rounds each side down and then
+    # gives at least 1 lane, so a standing queue + walkers got 11 of 10 lanes, and the headcount split
+    # could leave 1 lane unused. laneSplitFix 1: each side with people gets 1 lane, the other lanes go
+    # by weight, largest remainder first, so the two always add up to the link's lanes. Redefines
+    # lane_split after fix 26 instead of editing inside its text, so re-running stays a no-op.
+    "lanefix": [
+        ("Crush3/CrushAgent.rb",
+         "  # --- Blackboard Integration ---\n",
+         "  # SINGLELANE:lanefix -- fix 29, replaces fix 26's lane_split (Ruby keeps the later def)\n"
+         "  def lane_split(link, walk)\n"
+         "    n = [0, 0]\n"
+         "    w = [0.0, 0.0]\n"
+         "    link.getAgents().each do |a|\n"
+         "      d = a.isForwardDirection() ? 0 : 1\n"
+         "      n[d] += 1\n"
+         "      w[d] += walk ? walk_weight(a) : 1.0\n"
+         "    end\n"
+         "    w = n.map { |x| x > 0 ? 1.0 : 0.0 } if w.sum <= 0.0  # all stopped -> even\n"
+         "    return [1, 1] if w.sum <= 0.0\n"
+         "    total = link.getWidth() / Java::NodagumiAnanPJNetworkMapLink::MapLink.dWidth\n"
+         '    @lane_fix = getSimulator().getProperties().getDouble("laneSplitFix", 0.0) > 0.0 if @lane_fix.nil?\n'
+         "    lanes = total.to_i\n"
+         "    return w.map { |x| [(x * total / w.sum).to_i, 1].max } unless @lane_fix && lanes >= 2\n"
+         "    base = n.map { |x| x > 0 ? 1 : 0 }\n"
+         "    rest = lanes - base.sum\n"
+         "    q = w.map { |x| x * rest / w.sum }\n"
+         "    s = q.map(&:floor)\n"
+         "    [0, 1].sort_by { |d| -(q[d] - s[d]) }.first(rest - s.sum).each { |d| s[d] += 1 }\n"
+         "    [0, 1].map { |d| [base[d] + s[d], 1].max }  # an empty side keeps 1 unused lane, as before\n"
+         "  end\n"
+         "\n"
+         "  # --- Blackboard Integration ---\n"),
+    ],
 }
 
 

@@ -53,6 +53,7 @@
     "counterPushShare":1,     // fix 25: oncoming people push back like the braking they cause; 0 = off
     "laneSpeedWeight":1,      // fix 26: walking lanes split by speed, so a standing queue doesn't block the other side; 0 = CrowdWalk split
     "laneHold":60.0,          // fix 26: s before a direction's lane count may rise again (drops at once; user, 2026-10-23)
+    "laneSplitFix":1.0,       // fix 29: lanes of the two directions add up to the link's lanes (was 11 of 10 / 9 of 10); 0 = fix 26 rounding (user, 2026-10-26)
     "crushRecover":2.0,       // fix 27: crush clock winds down this many s per s of relief; 0 = reset to 0 (chosen by crush rate, no source)
     "simulation_step_time": 1,
     "show_background_map": true,

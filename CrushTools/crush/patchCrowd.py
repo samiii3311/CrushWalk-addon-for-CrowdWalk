@@ -502,8 +502,8 @@ RUBY_FIXES = {
          "    PhysicsBlackboard.instance.log_pressure(getAgentId(), pressure_from_behind * (@body_near ? @body_pass : 1.0))\n"),
     ],
     # Fix 16 (2026-10-21): everyone had the same limit (1112 N for exactly 240 s), so a whole
-    # stretch of queue died in the same minute (test: 196 of 196 deaths in sim minute 9). Kroll et
-    # al. 2017 give 4-6 min, so each agent draws its own limit from crushDuration..crushDurationMax
+    # stretch of queue died in the same minute (test: 196 of 196 deaths in sim minute 9). Hopkins et
+    # al. 1993 give 4-6 min, so each agent draws its own limit from crushDuration..crushDurationMax
     # (seeded by randseed + agent id: same run, same draw on any machine). Unset max = no spread.
     "tolerance": [
         ("Crush3/CrushAgent.rb",

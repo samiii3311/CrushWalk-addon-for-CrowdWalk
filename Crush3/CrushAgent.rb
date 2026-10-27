@@ -81,7 +81,7 @@ class CrushAgent < RubyAgentBase
 
     @crush_threshold = props.getDouble("crushThreshold", 1112.0)
     # Crushed only after the pressure stays above crushThreshold for crushDuration
-    # seconds in a row. Kroll et al. 2017: 1112 N can be fatal when held 4-6 min.
+    # seconds in a row. Hopkins et al. 1993: 1112 N can be fatal when held 4-6 min.
     @crush_duration = props.getDouble("crushDuration", 240.0)
     # SINGLELANE:tolerance -- own limit up to crushDurationMax, drawn on first use (no agent ID yet here)
     @crush_spread = props.getDouble("crushDurationMax", @crush_duration) - @crush_duration

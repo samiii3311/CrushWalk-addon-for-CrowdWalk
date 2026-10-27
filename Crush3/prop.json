@@ -24,13 +24,13 @@
     "file": "/mnt/ssd_2tb/log-sep14/linkMetrics.csv",
     "fields": ["push_force", "social_force", "compression_pressure", "raw_pressure", "time_over_threshold", "link_direction", "speed_fwd", "speed_bwd"]
     },
-    "crushThreshold":1112.0,  // N, Kroll et al. 2017
+    "crushThreshold":1112.0,  // N, Hopkins et al. 1993: 250 lbf held 4-6 min can kill (Kroll et al. 2017 does not give this number)
     "pressureTransfer":0.99,   // share of received pressure passed on per row (1 = full). Calibration choice, no source; 0.99 with the position-based chain (fix 24, tuned 2026-10-22; was 0.97 with the per-person chain). See PHYSICS_TUNING_LOG.md
     "wallPressureTransfer": 1.0, // walls: share passed on along a link with walls on both sides (WALL2; WALL1 = halfway). 1.0 = a wall leaks nothing (user, 2026-10-21, from the wall test: 2-wall peak 5507 N ~ Itaewon estimate); no measured source
     "contactBraking":true,    // SFM repulsion also from people ahead within contact range (false = old behaviour)
     "crushMargin":50.0,      // N; once over crushThreshold, keeps counting down to crushThreshold - crushMargin
-    "crushDuration":240.0,   // seconds above crushThreshold in a row before crush (Kroll et al. 2017: 4-6 min)
-    "crushDurationMax":360.0, // fix 16: each person draws their own limit between crushDuration and this (Kroll et al. 2017: 4-6 min); = crushDuration turns it off
+    "crushDuration":240.0,   // seconds above crushThreshold in a row before crush (Hopkins et al. 1993: 4-6 min)
+    "crushDurationMax":360.0, // fix 16: each person draws their own limit between crushDuration and this (Hopkins et al. 1993: 4-6 min); = crushDuration turns it off
     "bodyStepFactor":0.5,     // fix 12: speed share while stepping over a body (placeholder, no source)
     "bodyAwareDistance":2.0,  // fix 17: m behind a fallen body where the push is broken; 0 = off (tuned 2026-10-21, no source)
     "bodyPassShare":0.2,      // fix 17: share of the push passed on there; 1 = off (tuned 2026-10-21, no source)

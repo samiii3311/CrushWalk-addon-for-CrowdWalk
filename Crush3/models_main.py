@@ -41,6 +41,13 @@ def is_history(column):
 
 
 def random_forest():
+    # CRUSH_RF_DEVICE=cuda: XGBoost's random-forest mode on the GPU, set to match the sklearn forest below
+    # (300 trees, >= 5 rows per leaf, no depth limit, all inputs per split, ~63% of rows per tree like a
+    # bootstrap). Not the same algorithm (binned splits, no replacement), so never mix the two in one comparison.
+    if os.environ.get("CRUSH_RF_DEVICE") == "cuda":
+        from xgboost import XGBRFRegressor
+        return XGBRFRegressor(n_estimators=300, min_child_weight=5, max_depth=0, grow_policy="lossguide",
+                              subsample=0.632, colsample_bynode=1.0, random_state=0, device="cuda")
     return RandomForestRegressor(n_estimators=300, min_samples_leaf=5, n_jobs=-1, random_state=0)
 
 

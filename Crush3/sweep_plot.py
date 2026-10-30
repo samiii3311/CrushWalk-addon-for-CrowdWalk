@@ -129,7 +129,8 @@ def plot_bars(plt, res, path, col, scale, title, ylabel, ymax=None):
     ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
     ax.set_xlabel("Window (how far ahead the model looks)", fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)
-    ax.set_ylim(0, ymax or max(100, full[col].max() * 1.2, full[f"{col}_hi"].max() * scale * 1.1 if bars else 0))
+    ax.set_ylim(0, 100 if scale == 100 else  # percent: always 0-100, so graphs side by side match
+                ymax or max(100, full[col].max() * 1.2, full[f"{col}_hi"].max() * scale * 1.1 if bars else 0))
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", color="#e4e4e2", lw=0.8)
     ax.set_axisbelow(True)

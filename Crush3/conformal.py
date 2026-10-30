@@ -49,7 +49,7 @@ def ranges(p, model, levels=LEVELS, bands=BANDS):
     pred = p[f"pred_{model}"].to_numpy()
     err = np.abs(p.true.to_numpy() - pred)
     names = [f"{lo:g}-{hi:g} N" for lo, hi in zip(bands[:-1], bands[1:])]
-    band = pd.cut(pred, bands, right=False, labels=False)  # band number, low to high
+    band = pd.cut(np.clip(pred, bands[0], None), bands, right=False, labels=False)  # band number; below 0 N joins the lowest
     out, cover = [], {}
     for level in levels:
         inside = np.zeros(len(p), dtype=bool)
@@ -89,6 +89,7 @@ def selftest():
     n_runs, T = 40, 200
     pred = rng.uniform(0, 2000, n_runs * T)
     true = np.clip(pred + rng.normal(0, 20 + 0.1 * pred), 0, None)  # errors grow with pressure
+    pred[:5] = -1.0  # models can predict slightly below 0 (XGBoost does)
     p = pd.DataFrame({"scenario_id": np.repeat([f"r{i}" for i in range(n_runs)], T),
                       "fold": np.repeat(np.arange(n_runs) % 5, T), "true": true, "pred_M": pred})
     s = summary(p, "M")

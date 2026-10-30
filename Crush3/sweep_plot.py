@@ -82,7 +82,7 @@ def plot_data(plt, res, model, path, col="median_warning_s", scale=1, unit="s",
         if ranges:
             ax.vlines(x, g[f"{col}_lo"], g[f"{col}_hi"], color=colour, lw=1.2, alpha=0.8)
         lines.append((y[-1], line))
-    lines.sort(key=lambda t: -t[0])  # legend top to bottom = line ends top to bottom
+    # legend top to bottom = shortest window first (2 > 5 > 10 min), same order on every graph
     ax.legend([l for _, l in lines], [l.get_label() for _, l in lines], title="Window (value at the right end)",
               loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False, fontsize=11, title_fontsize=10)
     ax.set_title(f"{model}: does more data help?", loc="left", fontsize=13, fontweight="bold")

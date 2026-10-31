@@ -41,7 +41,8 @@ How to read it (rule 2 changed to the one-standard-error rule on 2026-10-15, use
   3. The choice was made on these test runs, so confirm it once on runs that played no part in
      it (a later seed) before it becomes a headline number.
 
-<out-dir>/results.csv is rewritten after every look-back, so a stopped sweep still leaves it.
+<out-dir>/results.csv is rewritten after every look-back, so a stopped sweep still leaves it;
+--resume with the same folder as --out-dir continues it, skipping what results.csv already has.
 Each look-back's own files are in <out-dir>/back<N>/.
 
 Runs in the background by default and shows its log (<out-dir>/run.log) live: Ctrl-C only stops
@@ -68,7 +69,7 @@ import background
 import baselines
 import models_main
 import results
-from error_bars import median_lead, pieces, real_share, redraw_diff, redraw_se
+from error_bars import median_lead, pieces, read_predictions, real_share, redraw_diff, redraw_se
 from force_model import TARGET, TICK, first_crossings, load_data, run
 
 BACK = (0, 10, 30, 60, 120, 300)  # look-backs to try, in ticks (1 tick = 1 s)
@@ -79,14 +80,20 @@ def no_history(columns=None):
     return {name: (model, False) for name, (model, _) in models_main.new_models(columns).items()}
 
 
-def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False):
-    """single=True: each look-back gets only its own change (60 -> the 60 s change alone), not the shorter ones too."""
+def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False, resume=False):
+    """single=True: each look-back gets only its own change (60 -> the 60 s change alone), not the shorter ones too.
+    resume: look-backs already in results.csv are not trained again (their saved predictions are read back)."""
     backs = sorted(set(backs))
     # history and Holt columns once, for the longest look-back; each training drops what it may not see
     df = baselines.add_holt(models_main.add_lags(df, [b for b in backs if b]))
     ev = first_crossings(df, TARGET, threshold)
-    parts, rows = {}, []
+    parts, rows = {}, results.done(out_dir, resume)
+    finished = {r["back_s"] for r in rows}
     for before, back in zip([None] + backs, backs):
+        if back in finished:  # the next look-back is compared with this one, so its pieces are still needed
+            print(f"-- back{back}: already in results.csv, skipped")
+            parts[back], _, _ = pieces(read_predictions(out_dir / f"back{back}" / "predictions.csv", df), ev, window, threshold)
+            continue
         keep = {back} if single else {b for b in backs if b <= back}
         s, oof = run(drop_history(df, keep), window, 0.2, out_dir / f"back{back}", cv=cv, window_max=True,
                      threshold=threshold, importance=False, models=models_main.new_models if back else no_history)
@@ -100,9 +107,9 @@ def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False):
                 row.update(d_warning_s=median_lead(leads) - median_lead(old_leads), d_warning_s_lo=w_lo, d_warning_s_hi=w_hi,
                            d_alarms_real=real_share(alarms) - real_share(old_alarms), d_alarms_real_lo=a_lo, d_alarms_real_hi=a_hi)
             rows.append(row)
-        res = one_se(pd.DataFrame(rows))
         out_dir.mkdir(parents=True, exist_ok=True)
-        res.to_csv(out_dir / "results.csv", index=False)
+        one_se(pd.DataFrame(rows)).to_csv(out_dir / "results.csv", index=False)
+    res = one_se(pd.DataFrame(rows))
     show(res)
     return res
 
@@ -119,12 +126,16 @@ def measures(s, parts, model, events):
             "warning_se": redraw_se(leads, median_lead), "real_se": redraw_se(alarms, real_share)}
 
 
-def search(df, pool, window, out_dir, cv=5, threshold=1062.0, directions=("forward", "backward"), names=None):
-    """Forward and/or backward search over sets of look-backs, one path per model (see the top of the file)."""
+def search(df, pool, window, out_dir, cv=5, threshold=1062.0, directions=("forward", "backward"), names=None, resume=False):
+    """Forward and/or backward search over sets of look-backs, one path per model (see the top of the file).
+    resume: sets already in results.csv are not trained again; the searches replay and mark their paths anew."""
     pool = sorted(set(pool) - {0})
     df = baselines.add_holt(models_main.add_lags(df, pool))
     ev = first_crossings(df, TARGET, threshold)
     rows = {}  # (model, look-backs) -> row; a set reached twice is trained once
+    for r in results.done(out_dir, resume):
+        tag = str(r["backs"])  # a single look-back is read back as a number
+        rows[r["model"], tuple(int(b) for b in tag.split("+"))] = {**r, "backs": tag, "path": ""}
 
     def save():
         res = rule(pd.DataFrame(list(rows.values())))
@@ -260,6 +271,23 @@ def selftest():
     assert "(+2 history)" in log and "(+4 history)" in log  # a single look-back, then both together
     assert res.set_index("backs").path["1+5"] == "forward backward"  # last forward step = first backward one
     assert res.pick.sum() == 1 and len(pd.read_csv(out / "results.csv")) == 3
+    # --resume after a crash: the last row is missing from results.csv, so only that set is trained again
+    pd.read_csv(out / "results.csv").iloc[:2].to_csv(out / "results.csv", index=False)
+    log = io.StringIO()
+    with contextlib.redirect_stdout(log):
+        again = search(df, [5, 1, 0], 5, out, cv=3, threshold=500, names=["RF_history"], resume=True)
+    assert log.getvalue().count("models:") == 1, log.getvalue()
+    assert again.set_index("backs").path.to_dict() == res.set_index("backs").path.to_dict()  # paths marked once
+    assert again.set_index("backs").pick.to_dict() == res.set_index("backs").pick.to_dict()
+    out = Path(tempfile.mkdtemp())
+    with contextlib.redirect_stdout(io.StringIO()):
+        res = sweep(df, [5, 0, 1], 5, out, cv=3, threshold=500)
+        pd.read_csv(out / "results.csv").iloc[:4].to_csv(out / "results.csv", index=False)  # back 5 is missing
+        log = io.StringIO()
+        with contextlib.redirect_stdout(log):
+            again = sweep(df, [5, 0, 1], 5, out, cv=3, threshold=500, resume=True)
+    assert log.getvalue().count("models:") == 1 and list(again.back_s) == [0, 0, 1, 1, 5, 5]
+    assert np.allclose(again.d_warning_s[2:], res.d_warning_s[2:], equal_nan=True)  # back 5 still compared with the read-back back 1
     print("\nselftest ok")
 
 
@@ -278,6 +306,9 @@ def main():
                    help="try sets of the --back look-backs together, by forward and/or backward search")
     p.add_argument("--models", help="with --search: only these models, comma-separated (default RF_history,XGB_history)")
     p.add_argument("--out-dir", type=Path, default=Path("fm_history"))
+    p.add_argument("--resume", action="store_true",
+                   help="continue a stopped job: give its folder as --out-dir (e.g. 2026-10-31_fm_history); "
+                        "trainings already in its results.csv are skipped")
     background.stop_requested()
     background.add_args(p)
     args = p.parse_args()
@@ -287,9 +318,9 @@ def main():
     if args.search:
         search(load_data(args.data), backs, args.window, args.out_dir, args.cv, args.threshold,
                ("forward", "backward") if args.search == "both" else (args.search,),
-               args.models.split(",") if args.models else None)
+               args.models.split(",") if args.models else None, args.resume)
     else:
-        sweep(load_data(args.data), backs, args.window, args.out_dir, args.cv, args.threshold, args.single)
+        sweep(load_data(args.data), backs, args.window, args.out_dir, args.cv, args.threshold, args.single, args.resume)
     results.zip_up(args.out_dir)
 
 

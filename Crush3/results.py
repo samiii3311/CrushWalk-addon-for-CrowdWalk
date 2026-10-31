@@ -29,6 +29,8 @@ import zipfile
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
+
 # =============================================================================
 # SETTING -- the folder all results go in. Change it here, or set CRUSH_RESULTS for one terminal.
 ROOT = Path(os.environ.get("CRUSH_RESULTS", "/mnt/ssd_1tb/crush/results"))
@@ -73,6 +75,16 @@ def find(path):
             print(f"using {hit}")
             return hit
     return path
+
+
+def done(folder, resume):
+    """--resume: the rows already in <folder>/results.csv, so a restarted job skips the trainings it finished."""
+    path = Path(folder) / "results.csv"
+    if not (resume and path.exists()):
+        return []
+    rows = pd.read_csv(path).to_dict("records")
+    print(f"resuming {folder}: {len(rows)} rows already in results.csv")
+    return rows
 
 
 def zip_up(folder):

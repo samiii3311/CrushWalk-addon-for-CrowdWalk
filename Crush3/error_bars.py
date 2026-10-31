@@ -80,6 +80,14 @@ def real_share(groups):
     return real / alarms if alarms else np.nan
 
 
+def read_predictions(path, like=None):
+    """A saved predictions.csv; the run and link ids get the dtypes they have in `like` (the training data)."""
+    oof = pd.read_csv(path, dtype={"scenario_id": str, "link_id": str})
+    if like is not None:
+        oof = oof.astype({k: like[k].dtype for k in ("scenario_id", "link_id") if k in like and k in oof})
+    return oof
+
+
 def pieces(oof, ev, horizon, threshold):
     """What the two numbers are made of, one item per run so that the runs can be re-drawn:
     model -> (warning times of its warned events, one array per run with an event; [alarms, real alarms], one pair per run).
@@ -191,7 +199,7 @@ def main():
         for f in sorted(cells, key=lambda f: (cell_id(f.parent.name)[0], float(cell_id(f.parent.name)[1].replace("all", "inf")))):
             horizon, size = cell_id(f.parent.name)
             print(f"{f.parent} ...", flush=True)
-            oof = pd.read_csv(f, dtype={"scenario_id": str, "link_id": str})
+            oof = read_predictions(f)
             for row in cell(oof, ev, horizon, args.threshold):
                 check(row, f.parent)
                 rows.append({"window_s": horizon, "train_runs": size, "crush_runs": trained_on.get((horizon, size), 0.0), **row})

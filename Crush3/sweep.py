@@ -13,6 +13,7 @@ for training along the bottom, share of crush events warned in time up the side.
 
 <out-dir>/results.csv (the table) and <out-dir>/sweep_<model>.png (the graphs) are rewritten
 after every run, so a stopped sweep still leaves them. Each run's own files are in <out-dir>/h<window>_runs<N>/.
+--resume with the same folder as --out-dir continues a stopped sweep, skipping the cells in its results.csv.
 
 Runs in the background by default and shows its log (<out-dir>/run.log) live: Ctrl-C only stops
 showing the log, `--stop` ends the job, `--foreground` runs it in the terminal (see background.py).
@@ -28,6 +29,8 @@ Usage (on the Linux machine):
 """
 
 import argparse
+import contextlib
+import io
 import sys
 import tempfile
 from pathlib import Path
@@ -97,12 +100,17 @@ def plot_model(plt, res, model, path, note, metric="warned_share"):
     print(f"graph: {path}")
 
 
-def sweep(df, windows, sizes, out_dir, cv=5, threshold=1062.0, models=MODEL_SETS["main"]):
-    """Every window length x every training size (0 = all runs)."""
+def sweep(df, windows, sizes, out_dir, cv=5, threshold=1062.0, models=MODEL_SETS["main"], resume=False):
+    """Every window length x every training size (0 = all runs). resume: skip the cells already in results.csv."""
     df = prepare(df, models)  # history and Holt columns once, not once per run
-    rows = []
+    rows = results.done(out_dir, resume)
+    finished = {(r["window_s"], str(r["train_runs"])) for r in rows}
+    res = pd.DataFrame(rows)
     for h in windows:
         for n in sizes:
+            if (h, str(n or "all")) in finished:
+                print(f"-- h{h}_runs{n or 'all'}: already in results.csv, skipped")
+                continue
             s, _ = run(df, h, 0.2, out_dir / f"h{h}_runs{n or 'all'}", cv=cv, window_max=True,
                        train_runs=n or None, threshold=threshold, importance=False, models=models)
             for model, r in s.attrs["crossings"].items():
@@ -131,6 +139,13 @@ def selftest():
     assert len(pd.read_csv(out / "results.csv")) == 12
     all_runs = res[res.train_runs == "all"]
     assert (all_runs.crush_runs >= res[res.train_runs == 2].crush_runs.max()).all()  # more runs, more crush runs
+    # --resume after a crash: the last cell is missing from results.csv, so only that one is trained again
+    pd.read_csv(out / "results.csv").iloc[:9].to_csv(out / "results.csv", index=False)
+    log = io.StringIO()
+    with contextlib.redirect_stdout(log):
+        again = sweep(df, [5, 10], [2, 0], out, cv=3, threshold=500, resume=True)
+    assert log.getvalue().count("models:") == 1 and len(again) == 12
+    assert np.allclose(again.warned_share, res.warned_share)
     print("\nselftest ok")
 
 
@@ -150,6 +165,9 @@ def main():
                    help="what --replot draws: events warned (default), records caught, or alarms that were real")
     p.add_argument("--replot", type=Path, default=None, metavar="RESULTS_CSV",
                    help="only redraw the graphs next to an existing results.csv")
+    p.add_argument("--resume", action="store_true",
+                   help="continue a stopped sweep: give its folder as --out-dir (e.g. 2026-10-31_fm_sweep); "
+                        "cells already in its results.csv are skipped")
     background.stop_requested()
     background.add_args(p)
     args = p.parse_args()
@@ -161,7 +179,7 @@ def main():
     args.out_dir = results.new_dir(args.out_dir)
     background.start(args, args.out_dir / "run.log")
     sweep(load_data(args.data), [int(x) for x in args.windows.split(",")], [int(x) for x in args.runs.split(",")],
-          args.out_dir, args.cv, args.threshold, MODEL_SETS[args.models])
+          args.out_dir, args.cv, args.threshold, MODEL_SETS[args.models], args.resume)
     results.zip_up(args.out_dir)
 
 

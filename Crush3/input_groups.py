@@ -29,6 +29,9 @@ Then train (both models, or one model per part with --models; RF and XGB may use
 Then the groups that passed one at a time, dropped all at once (group numbers from groups.csv; trains
 all inputs, the set, and the set with --cut-one groups also cut to one member):
     python3 input_groups.py crush.duckdb --back 30 --cut 0.2 --models RF_history --together 0,5,9 --cut-one 3 --out-dir fm_together_rf
+Or step by step (backward elimination, one model; each step drops or cuts the group that hurts least, until one
+input is left; read where to stop from the table afterwards):
+    python3 input_groups.py crush.duckdb --back 4 --cut 0.2 --models XGB_history --stepwise --out-dir fm_stepwise_xgb
     python3 input_groups.py --selftest
 
 <out-dir>/results.csv is rewritten after every training; groups.csv lists the groups.
@@ -51,7 +54,7 @@ import background
 import baselines
 import models_main
 import results
-from error_bars import median_lead, pieces, real_share, redraw_diff
+from error_bars import median_lead, pieces, read_predictions, real_share, redraw_diff
 from force_model import NOT_FEATURES, SIM_ONLY, TARGET, first_crossings, load_data, run
 from history_sweep import measures, one_se
 
@@ -92,7 +95,7 @@ def show_groups(rho, cut):
 
 
 def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, together=None, cut_one=(),
-          observable_only=False):
+          observable_only=False, stepwise=False, max_steps=None, resume=False):
     df = baselines.add_holt(models_main.add_lags(df, backs))
     cols = inputs(df, observable_only)
     rho = correlation(df, cols)
@@ -104,7 +107,9 @@ def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, t
                  ).to_csv(out_dir / "groups.csv", index=False)
 
     tests = [("all inputs", "", [])]  # (name, group number, inputs removed)
-    if together:  # the groups that passed one at a time, dropped all at once (and optionally some cut to one too)
+    if stepwise:
+        pass  # the steps are built one at a time below, from what each step chose
+    elif together:  # the groups that passed one at a time, dropped all at once (and optionally some cut to one too)
         both = [c for i in together for c in found[i]]
         tests.append(("drop together", "+".join(map(str, together)), both))
         if cut_one:
@@ -117,14 +122,23 @@ def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, t
                 tests.append((f"keep one g{i}", i, [c for c in g if c != keep_one(rho, g)]))
     ev = first_crossings(df, TARGET, threshold)
     models = (lambda columns=None: {n: models_main.new_models(columns)[n] for n in names}) if names else models_main.new_models
-    parts, rows = {}, []
-    for name, group, removed in tests:
+    parts, rows = {}, results.done(out_dir, resume)
+
+    def train(name, group, removed, **extra):
+        old = [r for r in rows if r["test"] == name]
+        if old:  # --resume: trained before the stop; "all inputs" is compared against, so its pieces are read back
+            print(f"-- {name}: already in results.csv, skipped")
+            if name == "all inputs":
+                oof = read_predictions(out_dir / "all_inputs" / "predictions.csv", df)
+                parts[name], _, _ = pieces(oof, ev, window, threshold)
+            return old
         keep = [c for c in cols if c not in removed]  # the keep-list keeps run() from re-adding dropped history columns
         s, oof = run(df, window, 0.2, out_dir / name.replace(" ", "_"), cv=cv, window_max=True, threshold=threshold,
                      top_features=keep, importance=False, models=models)
         parts[name], events, _ = pieces(oof, ev, window, threshold)
+        new = []
         for model in names or list(models_main.new_models()):
-            row = {"test": name, "group": group, "removed": ", ".join(removed), "model": model,
+            row = {**extra, "test": name, "group": group, "removed": ", ".join(removed), "model": model,
                    **measures(s, parts[name], model, events)}
             if name != "all inputs":  # difference to all inputs, on the same re-drawn runs
                 (old_l, old_a), (new_l, new_a) = parts["all inputs"][model], parts[name][model]
@@ -132,10 +146,55 @@ def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, t
                 row.update(d_warning_s=median_lead(new_l) - median_lead(old_l), d_warning_s_lo=w_lo, d_warning_s_hi=w_hi,
                            d_alarms_real=real_share(new_a) - real_share(old_a), d_alarms_real_lo=a_lo, d_alarms_real_hi=a_hi)
             rows.append(row)
-        res = one_se(pd.DataFrame(rows))
-        res.to_csv(out_dir / "results.csv", index=False)
+            new.append(row)
+        if name != "all inputs":
+            del parts[name]  # only "all inputs" is compared against; hundreds of steps would fill the memory
+        one_se(pd.DataFrame(rows)).to_csv(out_dir / "results.csv", index=False)
+        return new
+
+    for name, group, removed in tests:
+        train(name, group, removed)
+    if stepwise:
+        backward(train, cols, found, rho, out_dir, max_steps)
+    res = one_se(pd.DataFrame(rows))
+    res.to_csv(out_dir / "results.csv", index=False)
     show(res)
     return res
+
+
+def backward(train, cols, found, rho, out_dir, max_steps=None):
+    """Backward elimination over the groups, one model. Each step tries, for every group still in, dropping
+    what is left of it and (2+ members) cutting it to its keep-one member, on top of everything removed so
+    far, and keeps the try that misses the fewest events, then has the lowest MAE. It goes on until one
+    input is left (or max_steps); where to stop is read from the table afterwards, like the other tests.
+    With --resume the steps replay from results.csv (same tries, same picks) and training starts at the first missing try."""
+    removed, left = [], {i: list(g) for i, g in enumerate(found)}
+    step = 0
+    while left and (max_steps is None or step < max_steps):
+        step += 1
+        tries = []
+        for i, g in left.items():
+            tries.append((f"drop g{i}", i, g, []))
+            if len(g) > 1:
+                k = keep_one(rho, g)
+                tries.append((f"keep one g{i}", i, [c for c in g if c != k], [k]))
+        tries = [t for t in tries if len(cols) - len(removed) - len(t[2]) > 0]  # never train with no inputs
+        if not tries:
+            break
+        scored = []
+        for name, i, gone, rest in tries:
+            row, = train(f"step {step} {name}", i, removed + gone, step=step, chosen=False)
+            (out_dir / f"step_{step}_{name.replace(' ', '_')}" / "predictions.csv").unlink(missing_ok=True)  # ~300 MB each
+            scored.append((row["events_missed"], row["MAE"], row, gone, rest, i))
+        *_, row, gone, rest, i = min(scored, key=lambda t: t[:2])
+        row["chosen"] = True
+        removed += gone
+        if rest:
+            left[i] = rest
+        else:
+            del left[i]
+        print(f"\n== step {step}: {row['test'][len(f'step {step} '):]} chosen; MAE {row['MAE']:.2f}, "
+              f"missed {row['events_missed']}; {len(cols) - len(removed)} inputs left ==")
 
 
 def show(res):
@@ -148,6 +207,8 @@ def show(res):
     if "d_warning_s" in res:
         t["d_warning_s"], t["lo"], t["hi"] = res.d_warning_s, res.d_warning_s_lo, res.d_warning_s_hi
         t["d_real_%"], t["lo "], t["hi "] = pct(res.d_alarms_real), pct(res.d_alarms_real_lo), pct(res.d_alarms_real_hi)
+    if "chosen" in res:  # --stepwise: the try each step kept
+        t["chosen"] = res.chosen.map({True: "<-", False: ""}).fillna("")
     print("\n== each group dropped, or cut to one member; d_ = this row minus all inputs, lo/hi = its 95% range ==")
     print(t.to_string(index=False, na_rep=""))
     print("1se: w / r = within one standard error of the best row on warning / real alarms, among the rows that miss")
@@ -194,6 +255,29 @@ def selftest():
     assert set(both.removed.iloc[1].split(", ")) == set(found.input[found.group.isin(single)])
     extra = (found.group == multi).sum() - 1  # cut to one: all but one member of that group go too
     assert len(both.removed.iloc[2].split(", ")) == len(both.removed.iloc[1].split(", ")) + extra
+    # --stepwise: one try is kept per step, each step removes more, the kept try is the best of its step,
+    # it stops with at least one input left, and the big predictions files of the tries are deleted
+    d = Path(tempfile.mkdtemp())
+    with contextlib.redirect_stdout(io.StringIO()):
+        st = sweep(df, [5], 5, d, 0.2, cv=3, threshold=500, names=["RF_history"], stepwise=True)
+    tries = st[st.test != "all inputs"]
+    kept = tries[tries.chosen == True]  # noqa: E712 (NaN on the all-inputs row)
+    assert list(kept.step) == sorted(set(tries.step)) == list(range(1, len(kept) + 1))
+    sizes = [len(r.split(", ")) for r in kept.removed]
+    assert sizes == sorted(sizes) and len(set(sizes)) == len(sizes) and sizes[-1] == 5  # 6 inputs, 1 left
+    for step, g in tries.groupby("step"):
+        best = g.sort_values(["events_missed", "MAE"]).iloc[0]
+        assert best.chosen and g.chosen.sum() == 1, step
+    assert not list(d.glob("step_*/predictions.csv")) and (d / "all_inputs" / "predictions.csv").exists()
+    # --resume after a crash in the last step: its last try is missing, so only that one is trained again,
+    # and the replayed steps pick the same tries as before
+    pd.read_csv(d / "results.csv").iloc[:-1].to_csv(d / "results.csv", index=False)
+    log = io.StringIO()
+    with contextlib.redirect_stdout(log):
+        again = sweep(df, [5], 5, d, 0.2, cv=3, threshold=500, names=["RF_history"], stepwise=True, resume=True)
+    assert log.getvalue().count("models:") == 1, log.getvalue()
+    assert list(again.test) == list(st.test) and list(again.chosen.fillna(False)) == list(st.chosen.fillna(False))
+    assert np.allclose(again.d_warning_s.iloc[1:], st.d_warning_s.iloc[1:], equal_nan=True)
     print("\nselftest ok")
 
 
@@ -215,7 +299,14 @@ def main():
     p.add_argument("--cut-one", default="", help="with --together: also cut these groups to one member, as a second row")
     p.add_argument("--observable-only", action="store_true",
                    help="leave out force/pressure/time-over-threshold inputs (as force_model.py --observable-only)")
+    p.add_argument("--stepwise", action="store_true",
+                   help="backward elimination: each step drops (or cuts to one) the group that hurts least, until one "
+                        "input is left; needs one model in --models")
+    p.add_argument("--max-steps", type=int, default=None, help="with --stepwise: stop after this many steps")
     p.add_argument("--out-dir", type=Path, default=Path("fm_groups"))
+    p.add_argument("--resume", action="store_true",
+                   help="continue a stopped job: give its folder as --out-dir (e.g. 2026-10-31_fm_stepwise_xgb) and the "
+                        "same settings; trainings already in its results.csv are skipped")
     background.stop_requested()
     background.add_args(p)
     args = p.parse_args()
@@ -231,12 +322,15 @@ def main():
         return
     if args.cut is None:
         p.error("--cut is needed for training; look at --groups-only first")
+    if args.stepwise and (args.together or not args.models or "," in args.models):
+        p.error("--stepwise needs exactly one model in --models (each step picks what that model loses least from) "
+                "and no --together")
     args.out_dir = results.new_dir(args.out_dir)
     background.start(args, args.out_dir / "run.log")
     nums = lambda s: [int(x) for x in s.split(",") if x.strip()]
     sweep(load_data(args.data), backs, args.window, args.out_dir, args.cut, args.cv, args.threshold,
           args.models.split(",") if args.models else None, nums(args.together or ""), nums(args.cut_one),
-          args.observable_only)
+          args.observable_only, args.stepwise, args.max_steps, args.resume)
     results.zip_up(args.out_dir)
 
 

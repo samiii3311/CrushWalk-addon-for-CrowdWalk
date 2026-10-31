@@ -48,6 +48,12 @@ def random_forest():
         from xgboost import XGBRFRegressor
         return XGBRFRegressor(n_estimators=300, min_child_weight=5, max_depth=0, grow_policy="lossguide",
                               subsample=0.632, colsample_bynode=1.0, random_state=0, device="cuda")
+    # CRUSH_RF_DEVICE=cuml: cuML's own forest on the GPU (needs the cuML venv). Bootstrap with replacement like
+    # sklearn, but binned splits (CRUSH_RF_BINS, cuML default 128). Same rule: never mix with sklearn results.
+    if os.environ.get("CRUSH_RF_DEVICE") == "cuml":
+        from cuml.ensemble import RandomForestRegressor as CuRF
+        return CuRF(n_estimators=300, min_samples_leaf=5, max_depth=None, max_features=1.0, bootstrap=True,
+                    n_bins=int(os.environ.get("CRUSH_RF_BINS", 128)), random_state=0, output_type="numpy")
     return RandomForestRegressor(n_estimators=300, min_samples_leaf=5, n_jobs=-1, random_state=0)
 
 

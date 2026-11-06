@@ -80,10 +80,13 @@ def no_history(columns=None):
     return {name: (model, False) for name, (model, _) in models_main.new_models(columns).items()}
 
 
-def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False, resume=False):
+def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False, resume=False, names=None):
     """single=True: each look-back gets only its own change (60 -> the 60 s change alone), not the shorter ones too.
-    resume: look-backs already in results.csv are not trained again (their saved predictions are read back)."""
+    resume: look-backs already in results.csv are not trained again (their saved predictions are read back).
+    names: only these models (default both); one model per job keeps memory down (cuML RF peaks ~31 GB)."""
     backs = sorted(set(backs))
+    names = names or list(models_main.new_models())
+    pick = lambda f: lambda columns=None: {k: v for k, v in f(columns).items() if k in names}
     # history and Holt columns once, for the longest look-back; each training drops what it may not see
     df = baselines.add_holt(models_main.add_lags(df, [b for b in backs if b]))
     ev = first_crossings(df, TARGET, threshold)
@@ -96,9 +99,9 @@ def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False, resu
             continue
         keep = {back} if single else {b for b in backs if b <= back}
         s, oof = run(drop_history(df, keep), window, 0.2, out_dir / f"back{back}", cv=cv, window_max=True,
-                     threshold=threshold, importance=False, models=models_main.new_models if back else no_history)
+                     threshold=threshold, importance=False, models=pick(models_main.new_models if back else no_history))
         parts[back], events, _ = pieces(oof, ev, window, threshold)
-        for model in models_main.new_models():
+        for model in names:
             leads, alarms = parts[back][model]
             row = {"back_s": back, "model": model, **measures(s, parts[back], model, events)}
             if before is not None:  # the gain over the look-back before it, on the same re-drawn runs
@@ -304,7 +307,7 @@ def main():
                    help="each look-back gets only its own change, not the shorter ones as well")
     p.add_argument("--search", choices=("forward", "backward", "both"),
                    help="try sets of the --back look-backs together, by forward and/or backward search")
-    p.add_argument("--models", help="with --search: only these models, comma-separated (default RF_history,XGB_history)")
+    p.add_argument("--models", help="only these models, comma-separated (default RF_history,XGB_history)")
     p.add_argument("--out-dir", type=Path, default=Path("fm_history"))
     p.add_argument("--resume", action="store_true",
                    help="continue a stopped job: give its folder as --out-dir (e.g. 2026-10-31_fm_history); "
@@ -320,7 +323,8 @@ def main():
                ("forward", "backward") if args.search == "both" else (args.search,),
                args.models.split(",") if args.models else None, args.resume)
     else:
-        sweep(load_data(args.data), backs, args.window, args.out_dir, args.cv, args.threshold, args.single, args.resume)
+        sweep(load_data(args.data), backs, args.window, args.out_dir, args.cv, args.threshold, args.single, args.resume,
+              args.models.split(",") if args.models else None)
     results.zip_up(args.out_dir)
 
 

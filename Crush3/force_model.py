@@ -54,6 +54,7 @@ Usage (on the Linux machine):
     python3 force_model.py --selftest
 """
 
+import gc
 import argparse
 import sys
 import tempfile
@@ -238,6 +239,8 @@ def run(df, horizon, test_frac, out_dir, observable_only=False, cv=None, holdout
         keep = [c for c in ["scenario_id", "map_file", "link_id", TICK] if c in te]
         oof.append(te[keep].assign(fold=name, true=te.target.to_numpy(),
                                    **{f"pred_{k}": v for k, v in preds.items()}))
+        del fitted, m  # free this fold's forest before the next one is built (cuML RF holds ~30 GB)
+        gc.collect()
 
     per_fold = pd.DataFrame(fold_scores)
     summary = per_fold.groupby("model", sort=False)[["MAE", "RMSE"]].agg(["mean", "std"])

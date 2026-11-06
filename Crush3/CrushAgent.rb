@@ -211,6 +211,7 @@ class CrushAgent < RubyAgentBase
     return false if place.getAdvancingDistance() > 0.0
     entry = place.getLink()
     return false unless entry.hasTag("Entry")
+    return true if entrance_closed?(entry, currentTime)  # SINGLELANE:entrancegate
     node = place.getHeadingNode()
     arm = nil
     node.getLinks().each { |l| arm = l if l.hasSubTag("Spawn") }
@@ -239,11 +240,25 @@ class CrushAgent < RubyAgentBase
   # people (one per lane every personalSpaceMin m); the rest wait off the map. Slots are counted
   # once per link per tick, so a free gap is not filled by everyone waiting at once.
   @@gate = {}
+
+  # SINGLELANE:entrancegate -- E20 inflow cut (2026-11-06): an entrance can be closed for a while with
+  # "entranceGates": "linkId:fromSec:toSec,..." in prop.json (the Spawn or Entry link people wait on,
+  # seconds from the start). Only people still waiting off the map (position 0) are held, so nobody
+  # already walking, in either direction, is stopped. Empty = no gates (all earlier runs).
+  # ponytail: entrances only; a gate on a junction inside the map (bigger maps) needs its own gate .rb.
+  @@closed = nil
+  def entrance_closed?(link, currentTime)
+    @@closed ||= getSimulator().getProperties().getString("entranceGates", "").split(",").map { |s| s.split(":") }
+    t = currentTime.getRelativeTime()
+    @@closed.any? { |id, from, to| id == link.ID.to_s && t >= from.to_f && t < to.to_f }
+  end
+
   def entry_blocked?(currentTime)
     place = @javaAgent.currentPlace
     return false if place.getAdvancingDistance() > 0.0
     link = place.getLink()
     return false unless link.hasSubTag("Spawn")
+    return true if entrance_closed?(link, currentTime)  # SINGLELANE:entrancegate
     tick = currentTime.getRelativeTime().to_i
     key = link.ID
     slot = @@gate[key]

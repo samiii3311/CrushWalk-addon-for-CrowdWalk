@@ -10,7 +10,7 @@ finished run gives the same alarm a live loop would.
 
     python3 Crush3/inflow_cut.py prepare PRED.csv TEST.duckdb --runs ~/maps_e20 ~/maps_e20_bridge --out ~/e20_reruns
     python3 Crush3/inflow_cut.py run ~/e20_reruns --jobs 8
-    python3 Crush3/inflow_cut.py compare ~/e20_reruns
+    python3 Crush3/inflow_cut.py compare ~/e20_reruns --db TEST.duckdb
     python3 Crush3/inflow_cut.py selftest
 
 prepare writes OUT/plan.csv (one row per run and gate start) and one rerun folder per row.
@@ -25,6 +25,13 @@ compare writes OUT/compare.csv, judged on deaths (CRUSHED lines in sim.log):
   moved          deaths on a link that had none before (a new crush = failure)
   false alarm    alarm link had no deaths before; "no harm" if no new deaths, else "moved"
   can't act      no entrance feeds the alarm link (no rerun);  quiet: no alarm (no rerun)
+and, since no death does not mean no injury, also on peak pressure (pressure_outcome; highest
+max_compression_pressure per link, original from TEST.duckdb, rerun from its linkMetrics.csv):
+  kept under     alarm link went over 1,062 N before, stays under it now
+  lowered        still over, but its peak is lower
+  no effect      still over, peak as high or higher
+  moved          another link goes over 1,062 N that did not before
+  false alarm    alarm link stayed under before; "no harm" if still under, "made worse" if now over
 """
 import argparse
 import heapq
@@ -111,6 +118,16 @@ def outcome(before, after, alarm_link):
     return "reduced" if on(after) < on(before) else "not prevented"
 
 
+def pressure_outcome(before, after, alarm_link, line):
+    """before/after = {link: peak pressure} of the original run and the gated rerun."""
+    if any(p >= line > before.get(l, 0) for l, p in after.items() if l != alarm_link):
+        return "moved"
+    o, n = before.get(alarm_link, 0), after.get(alarm_link, 0)
+    if o < line:
+        return "false alarm, no harm" if n < line else "made worse"
+    return "kept under" if n < line else "lowered" if n < o else "no effect"
+
+
 def prepare(args):
     import duckdb
     col = f"pred_{args.model}"
@@ -177,17 +194,23 @@ def run(args):
 
 
 def compare(args):
+    import duckdb
     from run_batch import last_tick
     plan = pd.read_csv(args.out / "plan.csv")
+    with duckdb.connect(str(args.db), read_only=True) as con:
+        pk = con.execute(f"select scenario_id, link_id, max({PRESSURE}) p from link_ticks group by 1, 2").df()
+    orig_peaks = {s: dict(zip(g.link_id, g.p)) for s, g in pk.groupby("scenario_id")}
     out = []
     for r in plan.itertuples():
         row = r._asdict()
         if isinstance(r.folder, str):
             before, after = deaths(Path(r.orig_run) / "sim.log"), deaths(Path(r.folder) / "sim.log")
             lm = pd.read_csv(Path(r.folder) / "linkMetrics.csv", usecols=["link_id", PRESSURE])
+            o, n = orig_peaks[r.scenario_id], lm.groupby("link_id")[PRESSURE].max().to_dict()
             row.update(deaths=len(after), deaths_alarm_link=sum(l == r.alarm_link for _, l in after),
                        end_t=last_tick(Path(r.folder) / "linkMetrics.csv"),
-                       alarm_link_peak=lm[lm.link_id == r.alarm_link][PRESSURE].max(),
+                       orig_alarm_link_peak=o.get(r.alarm_link), alarm_link_peak=n.get(r.alarm_link),
+                       pressure_outcome=pressure_outcome(o, n, r.alarm_link, args.threshold),
                        outcome=("same as original" if before == after else "DIFFERENT") if r.setting == "nogate"
                        else outcome(before, after, r.alarm_link))
         else:
@@ -196,7 +219,8 @@ def compare(args):
     res = pd.DataFrame(out).drop(columns="Index")
     res.to_csv(args.out / "compare.csv", index=False)
     gated = res[res.folder.notna() & (res.setting != "nogate")]
-    print(pd.crosstab(gated.setting, gated.outcome, margins=True).to_string())
+    print("judged on deaths:\n" + pd.crosstab(gated.setting, gated.outcome, margins=True).to_string())
+    print("judged on peak pressure:\n" + pd.crosstab(gated.setting, gated.pressure_outcome, margins=True).to_string())
     print("no rerun:", res[res.folder.isna()].outcome.value_counts().to_dict())
     print("repeat check:", res[res.setting == "nogate"].outcome.value_counts().to_dict())
     print(f"-> {args.out / 'compare.csv'}")
@@ -214,6 +238,13 @@ def selftest():
     assert outcome(d, [], "L") == "prevented" and outcome(d, [("p1", "L")], "L") == "reduced"
     assert outcome(d, d, "L") == "not prevented" and outcome(d, [("p3", "kg")], "L") == "moved"
     assert outcome([], [], "L") == "false alarm, no harm" and outcome([], [("p1", "kg")], "L") == "moved"
+    o = {"L": 1500, "kg": 900}
+    assert pressure_outcome(o, {"L": 800, "kg": 900}, "L", 1062) == "kept under"
+    assert pressure_outcome(o, {"L": 1200}, "L", 1062) == "lowered"
+    assert pressure_outcome(o, {"L": 1500}, "L", 1062) == "no effect"
+    assert pressure_outcome(o, {"L": 800, "kg": 1100}, "L", 1062) == "moved"
+    assert pressure_outcome({"L": 900}, {"L": 950}, "L", 1062) == "false alarm, no harm"
+    assert pressure_outcome({"L": 900}, {"L": 1100}, "L", 1062) == "made worse"
     print("selftest ok")
 
 
@@ -235,6 +266,8 @@ def main():
     b.add_argument("--timeout", type=int, default=14400)
     c = sub.add_parser("compare")
     c.add_argument("out", type=Path)
+    c.add_argument("--db", type=Path, required=True, help="the test runs' DuckDB (original peak pressures)")
+    c.add_argument("--threshold", type=float, default=1062.0)
     sub.add_parser("selftest")
     args = p.parse_args()
     if args.cmd == "prepare":

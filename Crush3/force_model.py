@@ -36,6 +36,8 @@ so a random split would leak the answer):
                        map is tested once with K models instead of one per map
   --holdout-map family:NAME    one fold: test on every map of family NAME (e.g. randnet),
                        train on the rest. Give two DBs to train on one and test on the other.
+  --holdout-map runs:P1,P2,...  one fold: test on the runs whose scenario_id starts with one of
+                       these (e.g. runs:seed_5/,seed_6/ = new seeds in a second DB), train on the rest.
 
 Runs in the background by default and shows its log (<out-dir>/run.log) live: Ctrl-C only stops
 showing the log, `--stop` ends the job, `--foreground` runs it in the terminal (see background.py).
@@ -108,6 +110,12 @@ def add_target(df, horizon, target=TARGET, window_max=False):
 
 def make_folds(df, test_frac=0.2, cv=None, holdout_map=None):
     """List of (name, test_mask) -- train is always everything not in test."""
+    if holdout_map and holdout_map.startswith("runs:"):
+        pre = tuple(holdout_map.split(":", 1)[1].split(","))
+        mask = df.scenario_id.astype(str).str.startswith(pre).to_numpy()
+        if not mask.any() or mask.all():
+            sys.exit(f"--holdout-map {holdout_map}: need runs that start with {pre} and runs that don't")
+        return [(f"test runs {','.join(pre)} ({df.scenario_id[mask].nunique()} runs)", mask)]
     if holdout_map:
         # Group by map_id (hash of the map's contents) so every run on the same map is held out
         # together, even if the files sit in different folders; map_file is only a readable label.
@@ -383,6 +391,8 @@ def selftest():
         assert d3.map_file[m].drop_duplicates().str.split("_").str[0].value_counts().tolist() == [2, 2, 2]
     (name, m), = make_folds(d3, holdout_map="family:randnet")
     assert set(d3.map_file[m].str[:7]) == {"randnet"} and "randnet" not in set(d3.map_file[~m].str[:7]), name
+    (name, m), = make_folds(d3, holdout_map="runs:corridor_000/,funnel_001/")  # test on runs starting with these
+    assert set(d3.scenario_id[m]) == {f"{f}/Map.xml-r{j}" for f in ("corridor_000", "funnel_001") for j in (0, 1)}, name
 
     # observable-only: force columns out of the features
     run(df.assign(max_push_force=1.0, prev_max_compression_pressure=2.0), horizon=5, test_frac=0.2,
@@ -450,7 +460,8 @@ def main():
     split.add_argument("--holdout-map", default=None, metavar="MAP",
                        help="test on this map_file, train on the others; 'all' = leave-one-map-out; "
                             "'per-family:K' = K folds, each with ~1/K of every family's maps; "
-                            "'family:NAME' = test on all maps of that family (e.g. randnet)")
+                            "'family:NAME' = test on all maps of that family (e.g. randnet); "
+                            "'runs:P1,P2' = test on runs whose scenario_id starts with P1 or P2")
     p.add_argument("--test-frac", type=float, default=0.2, help="default split only")
     p.add_argument("--target", nargs="+", choices=TARGETS, default=list(TARGETS),
                    help="what to predict: pressure (N) and/or held (s above crushThreshold); default both")

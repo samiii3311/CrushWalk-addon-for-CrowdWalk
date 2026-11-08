@@ -32,6 +32,9 @@ all inputs, the set, and the set with --cut-one groups also cut to one member):
 Or step by step (backward elimination, one model; each step drops or cuts the group that hurts least, until one
 input is left; read where to stop from the table afterwards):
     python3 input_groups.py crush.duckdb --back 4 --cut 0.2 --models XGB_history --stepwise --out-dir fm_stepwise_xgb
+Then every keep/drop mix of the drops at steps 20-29 on top of step 19 of that run (E18, 1,024 trainings;
+mix bits = steps 20..29, 1 = dropped; mix 0000000000 is step 19 again, 1111111111 is step 29):
+    python3 input_groups.py crush.duckdb --back 4 --cut 0.2 --models XGB_history --mixes STEPWISE/results.csv --mix-steps 19,29 --out-dir fm_e18_mixes_xgb
     python3 input_groups.py --selftest
 
 <out-dir>/results.csv is rewritten after every training; groups.csv lists the groups.
@@ -41,6 +44,7 @@ Runs in the background by default and shows its log live (see background.py).
 import argparse
 import contextlib
 import io
+import itertools
 import sys
 import tempfile
 from pathlib import Path
@@ -95,7 +99,7 @@ def show_groups(rho, cut):
 
 
 def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, together=None, cut_one=(),
-          observable_only=False, stepwise=False, max_steps=None, resume=False):
+          observable_only=False, stepwise=False, max_steps=None, resume=False, mix=None):
     df = baselines.add_holt(models_main.add_lags(df, backs))
     cols = inputs(df, observable_only)
     rho = correlation(df, cols)
@@ -109,6 +113,11 @@ def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, t
     tests = [("all inputs", "", [])]  # (name, group number, inputs removed)
     if stepwise:
         pass  # the steps are built one at a time below, from what each step chose
+    elif mix:  # E18: every keep/drop mix of the later steps' drops, on top of the picked step
+        base, later = mix
+        for bits in itertools.product((0, 1), repeat=len(later)):
+            on = [p for b, p in zip(bits, later) if b]
+            tests.append((f"mix {''.join(map(str, bits))}", "+".join(n for n, _ in on), base + [c for _, g in on for c in g]))
     elif together:  # the groups that passed one at a time, dropped all at once (and optionally some cut to one too)
         both = [c for i in together for c in found[i]]
         tests.append(("drop together", "+".join(map(str, together)), both))
@@ -154,12 +163,24 @@ def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, t
 
     for name, group, removed in tests:
         train(name, group, removed)
+        if mix and name != "all inputs":
+            (out_dir / name.replace(" ", "_") / "predictions.csv").unlink(missing_ok=True)  # ~300 MB each, 1,024 of them
     if stepwise:
         backward(train, cols, found, rho, out_dir, max_steps)
     res = one_se(pd.DataFrame(rows))
     res.to_csv(out_dir / "results.csv", index=False)
     show(res)
     return res
+
+
+def mixes(path, first, last):
+    """From a --stepwise results.csv: the inputs removed by step `first`, and [(try, inputs)] that each of
+    steps first+1..last removed on top of the step before."""
+    r = pd.read_csv(path)
+    r = r[r.chosen == True].set_index("step")  # noqa: E712 (NaN on the all-inputs row)
+    gone = r.removed.fillna("").map(lambda s: [c for c in s.split(", ") if c])
+    later = [(r.test[s].split(" ", 2)[2], [c for c in gone[s] if c not in gone[s - 1]]) for s in range(first + 1, last + 1)]
+    return gone[first], later
 
 
 def backward(train, cols, found, rho, out_dir, max_steps=None):
@@ -278,6 +299,16 @@ def selftest():
     assert log.getvalue().count("models:") == 1, log.getvalue()
     assert list(again.test) == list(st.test) and list(again.chosen.fillna(False)) == list(st.chosen.fillna(False))
     assert np.allclose(again.d_warning_s.iloc[1:], st.d_warning_s.iloc[1:], equal_nan=True)
+    # --mixes: all inputs + 2^2 mixes of steps 2-3 on top of step 1; none = step 1's set, both = step 3's set
+    base, later = mixes(d / "results.csv", 1, 3)
+    step = lambda s: set(kept.removed[kept.step == s].iloc[0].split(", "))
+    assert set(base) == step(1) and len(later) == 2 and set(base).union(*[g for _, g in later]) == step(3)
+    m = Path(tempfile.mkdtemp())
+    with contextlib.redirect_stdout(io.StringIO()):
+        mx = sweep(df, [5], 5, m, 0.2, cv=3, threshold=500, names=["RF_history"], mix=(base, later))
+    assert list(mx.test) == ["all inputs", "mix 00", "mix 01", "mix 10", "mix 11"], list(mx.test)
+    assert set(mx.removed.iloc[1].split(", ")) == step(1) and set(mx.removed.iloc[4].split(", ")) == step(3)
+    assert not list(m.glob("mix_*/predictions.csv"))
     print("\nselftest ok")
 
 
@@ -303,6 +334,10 @@ def main():
                    help="backward elimination: each step drops (or cuts to one) the group that hurts least, until one "
                         "input is left; needs one model in --models")
     p.add_argument("--max-steps", type=int, default=None, help="with --stepwise: stop after this many steps")
+    p.add_argument("--mixes", type=Path, metavar="CSV",
+                   help="a --stepwise results.csv: train every keep/drop mix of what --mix-steps A,B's later steps "
+                        "removed, on top of step A (E18; 2^(B-A) trainings, use the same --back/--cut/--models)")
+    p.add_argument("--mix-steps", default="19,29", help="with --mixes: first,last step (default %(default)s)")
     p.add_argument("--out-dir", type=Path, default=Path("fm_groups"))
     p.add_argument("--resume", action="store_true",
                    help="continue a stopped job: give its folder as --out-dir (e.g. 2026-10-31_fm_stepwise_xgb) and the "
@@ -325,12 +360,15 @@ def main():
     if args.stepwise and (args.together or not args.models or "," in args.models):
         p.error("--stepwise needs exactly one model in --models (each step picks what that model loses least from) "
                 "and no --together")
+    nums = lambda s: [int(x) for x in s.split(",") if x.strip()]
+    if args.mixes and (args.stepwise or args.together):
+        p.error("--mixes goes alone (no --stepwise or --together)")
+    mix = mixes(args.mixes, *nums(args.mix_steps)) if args.mixes else None
     args.out_dir = results.new_dir(args.out_dir)
     background.start(args, args.out_dir / "run.log")
-    nums = lambda s: [int(x) for x in s.split(",") if x.strip()]
     sweep(load_data(args.data), backs, args.window, args.out_dir, args.cut, args.cv, args.threshold,
           args.models.split(",") if args.models else None, nums(args.together or ""), nums(args.cut_one),
-          args.observable_only, args.stepwise, args.max_steps, args.resume)
+          args.observable_only, args.stepwise, args.max_steps, args.resume, mix)
     results.zip_up(args.out_dir)
 
 

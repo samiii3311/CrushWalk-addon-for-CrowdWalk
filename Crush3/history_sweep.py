@@ -80,7 +80,7 @@ def no_history(columns=None):
     return {name: (model, False) for name, (model, _) in models_main.new_models(columns).items()}
 
 
-def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False, resume=False, names=None):
+def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False, resume=False, names=None, observable_only=False):
     """single=True: each look-back gets only its own change (60 -> the 60 s change alone), not the shorter ones too.
     resume: look-backs already in results.csv are not trained again (their saved predictions are read back).
     names: only these models (default both); one model per job keeps memory down (cuML RF peaks ~31 GB)."""
@@ -99,7 +99,8 @@ def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False, resu
             continue
         keep = {back} if single else {b for b in backs if b <= back}
         s, oof = run(drop_history(df, keep), window, 0.2, out_dir / f"back{back}", cv=cv, window_max=True,
-                     threshold=threshold, importance=False, models=pick(models_main.new_models if back else no_history))
+                     threshold=threshold, importance=False, models=pick(models_main.new_models if back else no_history),
+                     observable_only=observable_only)
         parts[back], events, _ = pieces(oof, ev, window, threshold)
         for model in names:
             leads, alarms = parts[back][model]
@@ -129,7 +130,8 @@ def measures(s, parts, model, events):
             "warning_se": redraw_se(leads, median_lead), "real_se": redraw_se(alarms, real_share)}
 
 
-def search(df, pool, window, out_dir, cv=5, threshold=1062.0, directions=("forward", "backward"), names=None, resume=False):
+def search(df, pool, window, out_dir, cv=5, threshold=1062.0, directions=("forward", "backward"), names=None, resume=False,
+           observable_only=False):
     """Forward and/or backward search over sets of look-backs, one path per model (see the top of the file).
     resume: sets already in results.csv are not trained again; the searches replay and mark their paths anew."""
     pool = sorted(set(pool) - {0})
@@ -151,7 +153,7 @@ def search(df, pool, window, out_dir, cv=5, threshold=1062.0, directions=("forwa
             tag = "+".join(map(str, backs))
             only = lambda columns=None: {model: models_main.new_models(columns)[model]}
             s, oof = run(drop_history(df, set(backs)), window, 0.2, out_dir / f"{model}_{tag}", cv=cv, window_max=True,
-                         threshold=threshold, importance=False, models=only)
+                         threshold=threshold, importance=False, models=only, observable_only=observable_only)
             parts, events, _ = pieces(oof, ev, window, threshold)
             rows[model, backs] = {"model": model, "backs": tag, "n_back": len(backs), "longest_s": backs[-1],
                                   "path": "", **measures(s, parts, model, events)}
@@ -308,6 +310,8 @@ def main():
     p.add_argument("--search", choices=("forward", "backward", "both"),
                    help="try sets of the --back look-backs together, by forward and/or backward search")
     p.add_argument("--models", help="only these models, comma-separated (default RF_history,XGB_history)")
+    p.add_argument("--observable-only", action="store_true",
+                   help="leave out force/pressure/time-over-threshold inputs and their history (as force_model.py)")
     p.add_argument("--out-dir", type=Path, default=Path("fm_history"))
     p.add_argument("--resume", action="store_true",
                    help="continue a stopped job: give its folder as --out-dir (e.g. 2026-10-31_fm_history); "
@@ -321,10 +325,10 @@ def main():
     if args.search:
         search(load_data(args.data), backs, args.window, args.out_dir, args.cv, args.threshold,
                ("forward", "backward") if args.search == "both" else (args.search,),
-               args.models.split(",") if args.models else None, args.resume)
+               args.models.split(",") if args.models else None, args.resume, observable_only=args.observable_only)
     else:
         sweep(load_data(args.data), backs, args.window, args.out_dir, args.cv, args.threshold, args.single, args.resume,
-              args.models.split(",") if args.models else None)
+              args.models.split(",") if args.models else None, observable_only=args.observable_only)
     results.zip_up(args.out_dir)
 
 

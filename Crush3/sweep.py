@@ -40,6 +40,7 @@ import pandas as pd
 
 import background
 import results
+import models_main
 from force_model import MODEL_SETS, TARGET, TICK, load_data, prepare, run
 
 FLAT_GAIN = 0.05  # a window counts as "flat" when its last step in training size gained less than this share of events
@@ -100,7 +101,8 @@ def plot_model(plt, res, model, path, note, metric="warned_share"):
     print(f"graph: {path}")
 
 
-def sweep(df, windows, sizes, out_dir, cv=5, threshold=1062.0, models=MODEL_SETS["main"], resume=False):
+def sweep(df, windows, sizes, out_dir, cv=5, threshold=1062.0, models=MODEL_SETS["main"], resume=False,
+          observable_only=False):
     """Every window length x every training size (0 = all runs). resume: skip the cells already in results.csv."""
     df = prepare(df, models)  # history and Holt columns once, not once per run
     rows = results.done(out_dir, resume)
@@ -112,7 +114,8 @@ def sweep(df, windows, sizes, out_dir, cv=5, threshold=1062.0, models=MODEL_SETS
                 print(f"-- h{h}_runs{n or 'all'}: already in results.csv, skipped")
                 continue
             s, _ = run(df, h, 0.2, out_dir / f"h{h}_runs{n or 'all'}", cv=cv, window_max=True,
-                       train_runs=n or None, threshold=threshold, importance=False, models=models)
+                       train_runs=n or None, threshold=threshold, importance=False, models=models,
+                       observable_only=observable_only)
             for model, r in s.attrs["crossings"].items():
                 rows.append({"window_s": h, "train_runs": n or "all", "crush_runs": s.attrs["crush_runs"],
                              "model": model, **r})
@@ -161,6 +164,9 @@ def main():
     p.add_argument("--out-dir", type=Path, default=Path("fm_sweep"))
     p.add_argument("--models", choices=MODEL_SETS, default="main",
                    help="main = RF and XGBoost with history (default); other = the comparison models; all = both")
+    p.add_argument("--back", help="history look-backs in ticks, comma-separated (default: LAGS in models_main.py)")
+    p.add_argument("--observable-only", action="store_true",
+                   help="leave out force/pressure/time-over-threshold inputs and their history (as force_model.py)")
     p.add_argument("--metric", choices=METRICS, default="warned_share",
                    help="what --replot draws: events warned (default), records caught, or alarms that were real")
     p.add_argument("--replot", type=Path, default=None, metavar="RESULTS_CSV",
@@ -178,8 +184,11 @@ def main():
         p.error("give the database, or --replot results.csv")
     args.out_dir = results.new_dir(args.out_dir)
     background.start(args, args.out_dir / "run.log")
-    sweep(load_data(args.data), [int(x) for x in args.windows.split(",")], [int(x) for x in args.runs.split(",")],
-          args.out_dir, args.cv, args.threshold, MODEL_SETS[args.models], args.resume)
+    df = load_data(args.data)
+    if args.back:  # as force_model.py: prepare() then sees history columns and adds no others
+        df = models_main.add_lags(df, [int(x) for x in args.back.split(",")])
+    sweep(df, [int(x) for x in args.windows.split(",")], [int(x) for x in args.runs.split(",")],
+          args.out_dir, args.cv, args.threshold, MODEL_SETS[args.models], args.resume, args.observable_only)
     results.zip_up(args.out_dir)
 
 

@@ -164,6 +164,7 @@ def main():
     p.add_argument("--out-dir", type=Path, default=Path("fm_sweep"))
     p.add_argument("--models", choices=MODEL_SETS, default="main",
                    help="main = RF and XGBoost with history (default); other = the comparison models; all = both")
+    p.add_argument("--only", help="train only these models of the set, comma-separated (e.g. XGB_history)")
     p.add_argument("--back", help="history look-backs in ticks, comma-separated (default: LAGS in models_main.py)")
     p.add_argument("--observable-only", action="store_true",
                    help="leave out force/pressure/time-over-threshold inputs and their history (as force_model.py)")
@@ -182,13 +183,19 @@ def main():
         return plot_sweep(pd.read_csv(args.replot), args.replot.parent, metric=args.metric)
     if not args.data:
         p.error("give the database, or --replot results.csv")
+    models = MODEL_SETS[args.models]
+    if args.only:  # as force_model.py
+        only, full = args.only.split(","), models
+        if set(only) - set(full()):
+            p.error(f"--only: models in --models {args.models} are {', '.join(full())}")
+        models = lambda columns=None: {k: v for k, v in full(columns).items() if k in only}
     args.out_dir = results.new_dir(args.out_dir)
     background.start(args, args.out_dir / "run.log")
     df = load_data(args.data)
     if args.back:  # as force_model.py: prepare() then sees history columns and adds no others
         df = models_main.add_lags(df, [int(x) for x in args.back.split(",")])
     sweep(df, [int(x) for x in args.windows.split(",")], [int(x) for x in args.runs.split(",")],
-          args.out_dir, args.cv, args.threshold, MODEL_SETS[args.models], args.resume, args.observable_only)
+          args.out_dir, args.cv, args.threshold, models, args.resume, args.observable_only)
     results.zip_up(args.out_dir)
 
 

@@ -102,7 +102,7 @@ def plot_model(plt, res, model, path, note, metric="warned_share"):
 
 
 def sweep(df, windows, sizes, out_dir, cv=5, threshold=1062.0, models=MODEL_SETS["main"], resume=False,
-          observable_only=False):
+          observable_only=False, drop=()):
     """Every window length x every training size (0 = all runs). resume: skip the cells already in results.csv."""
     df = prepare(df, models)  # history and Holt columns once, not once per run
     rows = results.done(out_dir, resume)
@@ -115,7 +115,7 @@ def sweep(df, windows, sizes, out_dir, cv=5, threshold=1062.0, models=MODEL_SETS
                 continue
             s, _ = run(df, h, 0.2, out_dir / f"h{h}_runs{n or 'all'}", cv=cv, window_max=True,
                        train_runs=n or None, threshold=threshold, importance=False, models=models,
-                       observable_only=observable_only)
+                       observable_only=observable_only, drop=list(drop))
             for model, r in s.attrs["crossings"].items():
                 rows.append({"window_s": h, "train_runs": n or "all", "crush_runs": s.attrs["crush_runs"],
                              "model": model, **r})
@@ -166,6 +166,7 @@ def main():
                    help="main = RF and XGBoost with history (default); other = the comparison models; all = both")
     p.add_argument("--only", help="train only these models of the set, comma-separated (e.g. XGB_history)")
     p.add_argument("--back", help="history look-backs in ticks, comma-separated (default: LAGS in models_main.py)")
+    p.add_argument("--drop", default="", help="inputs to leave out, comma-separated (as force_model.py)")
     p.add_argument("--observable-only", action="store_true",
                    help="leave out force/pressure/time-over-threshold inputs and their history (as force_model.py)")
     p.add_argument("--metric", choices=METRICS, default="warned_share",
@@ -195,7 +196,8 @@ def main():
     if args.back:  # as force_model.py: prepare() then sees history columns and adds no others
         df = models_main.add_lags(df, [int(x) for x in args.back.split(",")])
     sweep(df, [int(x) for x in args.windows.split(",")], [int(x) for x in args.runs.split(",")],
-          args.out_dir, args.cv, args.threshold, models, args.resume, args.observable_only)
+          args.out_dir, args.cv, args.threshold, models, args.resume, args.observable_only,
+          [c.strip() for c in args.drop.split(",") if c.strip()])
     results.zip_up(args.out_dir)
 
 

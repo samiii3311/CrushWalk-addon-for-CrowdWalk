@@ -4,24 +4,30 @@ These tools build a dataset of simulated crowd crushes and train models on it. A
 
 Everything runs on top of [CrowdWalk](https://github.com/crest-cassia/CrowdWalk) with the CrushWalk physics addon from this repository. You don't need to write any Java. The tools generate the maps, run the simulator, collect the results and train the models for you.
 
-The scripts are all in this folder, in five groups:
+The scripts are all in this folder, in these groups:
 
 | Group | Script | What it does |
 |---|---|---|
 | Data collection | `run_batch.py` | The runner: makes maps, simulates them, saves the results, unattended. |
 | | `make_maps.py` | Makes random walkway layouts and crowds. `run_batch.py` calls it for you. |
 | | `link_context.py` | Turns one simulation's output into rows in the database. `run_batch.py` calls it for you. |
+| | `random_net.py` | Makes the random street networks (the `randnet` map family) used to test on new kinds of map. |
 | Model training | `force_model.py` | The runner: trains the models on the database and tells you how accurate they are. |
 | | `sweep.py` | Calls `force_model.py` at every window length and training size. |
 | | `history_sweep.py` | Calls `force_model.py` once per history look-back, same data and window, and prints the table to choose from. |
+| | `input_groups.py` | Which inputs can go: retrains without groups of related inputs, or removes them one group at a time. |
 | Main models | `models_main.py` | Random Forest and XGBoost with history (how each link changed over the last 10, 30 and 60 s). Trained by default. |
 | Baselines | `baselines.py` | What the models are compared with: the training average, "no change", and Holt's time-series method. Always computed. |
 | Other models | `models_other.py` | Comparison models: the main two without history, Ridge, and a density formula. |
 | Reading results | `sweep_plot.py`, `error_bars.py` | Graphs and 95% ranges from saved results. They train nothing. |
+| | `compare_plot.py`, `history_plot.py` | Bar graphs that compare finished tests, and the graph of a look-back sweep. |
+| | `threshold_sweep.py` | What it costs to miss fewer events: rescores saved predictions at lower alarm lines. |
+| | `conformal.py` | A confidence range for every prediction, from saved predictions. |
+| Gate test | `inflow_cut.py` | Reruns test runs with the entrances closed at the first alarm, and compares the deaths. |
 | Helper | `background.py` | Lets the long jobs (`run_batch.py`, `force_model.py`, `sweep.py`, `history_sweep.py`) run in the background with a live log. |
 | | `results.py` | Decides where results go: one dated folder per run, in one results folder. |
 
-The other files in this folder (`CrushAgent.rb`, `prop.json`, `gen.json` and so on) are the simulator side: the agent scripts and the template settings every generated scenario copies. `PHYSICS_NOTES.md` explains the physics.
+The other files in this folder (`CrushAgent.rb`, `prop.json`, `gen.json` and so on) are the simulator side: the agent scripts and the template settings every generated scenario copies.
 
 ## Contents
 
@@ -70,14 +76,14 @@ The results folder is set at the top of `results.py` (`ROOT`). On another machin
 To check the Python side is ready, run the self-tests. They use made-up data and don't touch the simulator, so they take a few minutes in total:
 
 ```
-cd Crush3 && for s in link_context make_maps run_batch background baselines models_main force_model sweep sweep_plot error_bars; do python3 $s.py --selftest || break; done; cd ..
+cd Crush3 && for s in link_context make_maps random_net run_batch background results baselines models_main force_model sweep history_sweep input_groups sweep_plot error_bars threshold_sweep conformal compare_plot history_plot; do python3 $s.py --selftest || break; done; cd ..
 ```
 
-Each one should end with `selftest ok`. The loop stops at the first one that fails.
+Each one should end with `selftest ok`. The loop stops at the first one that fails. `inflow_cut.py` has its self-test as a command: `python3 inflow_cut.py selftest`.
 
 ## 2. Long jobs: the live log, Ctrl-C and stopping
 
-`run_batch.py`, `force_model.py` and `sweep.py` can run for hours. By default each one starts itself in the background, writes everything it prints to a log file, and shows that log live in your terminal. The first lines tell you where the log is and how to end the job:
+`run_batch.py`, `force_model.py`, `sweep.py`, `history_sweep.py` and `input_groups.py` can run for hours. By default each one starts itself in the background, writes everything it prints to a log file, and shows that log live in your terminal. The first lines tell you where the log is and how to end the job:
 
 ```
 running in the background (pid 41234), log: /mnt/ssd_1tb/crush/results/2026-10-12_fm_sweep/run.log
@@ -93,7 +99,7 @@ running in the background (pid 41234), log: /mnt/ssd_1tb/crush/results/2026-10-1
 | Run it the plain way, where Ctrl-C ends the job | Add `--foreground` to the command. |
 | Put the log somewhere else | Add `--log some/file.log` to the command. |
 
-The default log is `<out>/run_batch.log` for `run_batch.py` and `<out-dir>/run.log` for the other two. A new job adds to the end of an existing log; it does not erase it. While a job is running, a second job with the same log file is refused, so give it another `--out-dir` or `--log`.
+The default log is `<out>/run_batch.log` for `run_batch.py` and `<out-dir>/run.log` for the others. A new job adds to the end of an existing log; it does not erase it. While a job is running, a second job with the same log file is refused, so give it another `--out-dir` or `--log`.
 
 `--stop` does what Ctrl-C does in the foreground: `run_batch.py` ends the simulations in progress, keeps every finished run, and says so in the log. If a job has not ended after 60 seconds, `--stop` kills it.
 
@@ -147,6 +153,8 @@ This can take many hours. It runs in the background (section 2), so you can pres
 - a map from one of five families: a corridor with a bottleneck, a funnel where several paths merge, a T-junction, a crossroads (sometimes with people walking both ways), or a branching tree like a stadium exit;
 - a crowd: how many people (300 to 3000), when each group starts walking, and how quickly they are released.
 
+Two more families are not in the default: `randnet`, random street networks for testing on new kinds of map, and `bridge`, two crowds meeting head-on on a narrow bridge. Add them with `--families`, and put their runs in a database of their own.
+
 Every map is used for three different crowds (change this with `--runs-per-map`). That matters for testing, as explained in the next section.
 
 If you never want to type the paths, set them once in the SETTINGS block at the top of `run_batch.py` and run `python3 Crush3/run_batch.py` with no options (section 8).
@@ -165,6 +173,8 @@ python3 Crush3/force_model.py /mnt/ssd_2tb/crush.duckdb --horizon 120 --cv 5 --t
 |---|---|
 | `--cv 5` | Can the model predict a **new crowd on a layout it has seen**? Runs are split five ways; every run is tested once, and the model never sees the run it's being tested on. |
 | `--holdout-map all` (instead of `--cv 5`) | Can the model handle a **layout it has never seen**? Every map is held out in turn, with all its runs. |
+| `--holdout-map per-family:5` (instead of `--cv 5`) | The same question in 5 folds: each fold holds out about a fifth of the maps of every family, so every map is tested once. Much faster than `all`. |
+| `--holdout-map family:randnet` | A **new kind of map**: train on the other families, test on all random networks. Needs a database with both. |
 | `--cv 5 --observable-only` | Can it work from **things a camera could measure**? This hides the simulated forces from the model (in real life nobody can measure the force inside a crowd) and keeps counts, density, speeds and the layout. |
 
 Expect the second and third to score worse than the first. How much worse is a useful result in itself.
@@ -208,6 +218,14 @@ Each comes as a mean and a spread across the test folds. A large spread means th
 | `crossings`, `caught`, `caught_share` | The same idea counted per record instead of per event. |
 
 The two plain baselines are not in this table: neither can ever raise an alarm on a calm link.
+
+**The three measures.** `crossings.csv` counts only the first crossing of each link. `history_sweep.py` and `input_groups.py` pick with the measures used since November 2026 (`pieces3` in `error_bars.py`):
+
+- **Event:** the pressure crosses 1062 N after more than 120 s below it, so a link can have several events in one run.
+- **Missed:** no alarm on that link in the window before the event. The warning time is capped at the window.
+- **Correct alarm:** alarm seconds less than 120 s apart are one alarm. An alarm is correct if it was on at some point in the window before an event. Alarms that switch on during an event are neither correct nor false.
+
+Their `real_%` column holds the share of correct alarms (correct ÷ (correct + false)).
 
 **`importance.csv`: which variables matter?** For each input, how much worse the best model gets when that input is scrambled. Big numbers are important variables. Numbers near zero (or negative) are candidates to drop. Inputs that carry the same information share their importance, so the real test of a short list is to retrain on it (`--top-features`, section 7). Columns ending in `_d10`, `_d30`, `_d60` are the history: the change over the last 10, 30 and 60 ticks.
 
@@ -265,12 +283,12 @@ Each row shows its own numbers and the difference to the row above it, which is 
 How to read it (rule 2 changed to the one-standard-error rule on 2026-10-15):
 
 1. **Events missed come first.** A look-back that misses more events is not an improvement, whatever else it gains. A missed event is worse than a false alarm.
-2. **One-standard-error rule** (Hastie, Tibshirani & Friedman, *The Elements of Statistical Learning*). Among the look-backs that miss the fewest events, find the best row. Take the shortest look-back whose warning time and share of real alarms are both no more than one standard error below the best row's. The standard error is how much the best row's number moves when the test runs are re-drawn. Example: the best share of real alarms is 77% with a standard error of 6 points, so anything from 71% up counts as just as good, and the shortest such look-back wins. The table marks these rows `wr` in the `1se` column.
+2. **One-standard-error rule** (Hastie, Tibshirani & Friedman, *The Elements of Statistical Learning*). Among the look-backs that miss the fewest events, find the best row. Take the shortest look-back whose warning time and share of correct alarms are both no more than one standard error below the best row's. The standard error is how much the best row's number moves when the test runs are re-drawn. Example: the best share of correct alarms is 77% with a standard error of 6 points, so anything from 71% up counts as just as good, and the shortest such look-back wins. The table marks these rows `wr` in the `1se` column.
 3. **Confirm it.** The choice was made on these test runs, so check it once on runs that played no part in it, such as a later seed.
 
 With `--single`, each look-back gets only its own change (60 = the 60 s change alone) instead of all the shorter ones as well. Any list works with `--back`, for example every 10 s: `--back 0,10,20,30,40,50,60`.
 
-With `--search both`, the `--back` list is a pool and the script tries sets of them together, such as 30+60 without 10. Forward search starts with no history and adds the look-back that helps most (fewest missed events, then the most real alarms) until all are in. Backward search starts with all of them and drops the one that hurts least until one is left. Each model gets its own path. The one-standard-error rule is then applied over the sets on both paths, and `pick` marks the passing set with the fewest look-backs. A pool of 6 takes 31 trainings per model.
+With `--search both`, the `--back` list is a pool and the script tries sets of them together, such as 30+60 without 10. Forward search starts with no history and adds the look-back that helps most (fewest missed events, then the most correct alarms) until all are in. Backward search starts with all of them and drops the one that hurts least until one is left. Each model gets its own path. The one-standard-error rule is then applied over the sets on both paths, and `pick` marks the passing set with the fewest look-backs. A pool of 6 takes 31 trainings per model.
 
 ```
 python3 Crush3/history_sweep.py /mnt/ssd_2tb/crush.duckdb --search both --back 4,10,30,60,120,300 --out-dir fm_combo
@@ -280,14 +298,30 @@ python3 Crush3/history_sweep.py /mnt/ssd_2tb/crush.duckdb --search both --back 4
 |---|---|
 | `back_s` | How far back the model may look, in seconds. 0 = no history. |
 | `missed` | Events the model gave no warning for, out of all events. |
-| `warning_s`, `real_%` | Typical warning time and share of alarms that were real: the same numbers as in `crossings.csv`. |
+| `warning_s`, `real_%` | Typical warning time and share of correct alarms, with the three measures (section 5). |
 | `d_warning_s`, `d_real_%` with `lo`, `hi` | This row minus the row above it, and the 95% range of that difference. |
-| `se_w`, `se_r` | Standard error of the warning time (s) and of the share of real alarms (points). |
-| `1se` | `w` / `r`: within one standard error of the best row on warning time / real alarms. `wr` = both. |
+| `se_w`, `se_r` | Standard error of the warning time (s) and of the share of correct alarms (points). |
+| `1se` | `w` / `r`: within one standard error of the best row on warning time / correct alarms. `wr` = both. |
 
 The search is meant for one window (2 min by default, `--window` changes it). For another window, compare only your choice with today's setting, for example `--back 60,120`, instead of repeating the whole search.
 
-To use your choice, set `LAGS` in `models_main.py` (section 8).
+To use your choice, pass it to `force_model.py` with `--back` (for example `--back 4`), or set `LAGS` in `models_main.py` (section 8). Add `--observable-only` to search the look-back for the inputs a camera could measure.
+
+### Which inputs can go?
+
+`input_groups.py` asks which inputs the model does not need. Inputs that carry the same information (density, people count, the neighbours' density, ...) are first put into groups by their rank correlation. Look at the groups at several cuts first; this trains nothing:
+
+```
+python3 Crush3/input_groups.py /mnt/ssd_2tb/crush.duckdb --back 4 --groups-only
+```
+
+Then remove one group at a time, each time the one that hurts least, until one input is left (one model per job):
+
+```
+python3 Crush3/input_groups.py /mnt/ssd_2tb/crush.duckdb --window 120 --back 4 --cut 0.2 --models XGB_history --stepwise --out-dir fm_stepwise_xgb
+```
+
+`results.csv` has one row per step, with the same columns and the same rule as the look-back table: missed events first, then the fewest inputs whose warning time and correct alarms stay within one standard error of the best. The script does not choose for you. A stepwise search is long (hundreds of trainings); `--resume` with the dated folder continues a stopped one. `--observable-only` searches only the inputs a camera could measure.
 
 ## 7. Add-ons: what to add to a command
 
@@ -303,12 +337,24 @@ Every option is something you add to the end of a command. They can be combined.
 | Test on layouts never seen | `--holdout-map all` in place of `--cv 5` | |
 | Use only what a camera could see | `--observable-only` | |
 | Compare with the other models (also `sweep.py`) | `--models all` | `--models other` trains only the comparison models. |
+| Choose the history look-back | `--back N` (ticks) | `--back 4`; several: `--back 10,30,60` (the default). |
+| Leave out some inputs | `--drop A,B` | The `removed` list of an `input_groups.py` row. |
+| Train only one of the main models | `--only NAME` | `--only RF_history` |
+| Test on maps never seen, in folds | `--holdout-map per-family:5` | Also `family:randnet`, or `runs:seed_5/,seed_6/` for runs from new seeds. |
 | Train on the strongest inputs only | `--top-features K --features-from <importance.csv>` | `--top-features 10 --features-from fm_h120/pressure/importance.csv --no-importance --out-dir fm_h120_top10` |
 | See what less data does | `--train-runs N` | `--train-runs 24` trains each fold on 24 runs. |
 | Move the danger line (also `sweep.py`) | `--threshold N` (newtons) | `--threshold 900` |
 | Predict one exact moment, not the highest in the window | `--at-horizon` | The old target. |
 | Change the number of test folds (also `sweep.py`) | `--cv K` | `--cv 10` |
 | Name the results (also `sweep.py`) | `--out-dir NAME` | Becomes `<results folder>/<date>_NAME`. Use a new name for every experiment: the same name on the same day is the same folder. |
+
+**Training on a GPU.** Set these before the command. Results from different devices differ slightly, so keep one device for every result you compare.
+
+| Variable | Effect |
+|---|---|
+| `CRUSH_XGB_DEVICE=cuda` | XGBoost trains on the GPU (about 65 times faster on our machine). |
+| `CRUSH_RF_DEVICE=cuml` | Random Forest uses cuML's forest on the GPU (needs cuML installed). `CRUSH_RF_BINS=256` sets its number of split bins (cuML's default is 128). |
+| `CRUSH_RF_DEVICE=cuda` | Random Forest uses XGBoost's forest mode on the GPU instead. |
 
 A typical longer command, made of add-ons:
 
@@ -334,7 +380,11 @@ python3 Crush3/force_model.py /mnt/ssd_2tb/crush.duckdb --horizon 120 --cv 5 --t
 | Add new maps to an existing database | `--start-seed N` | `--start-seed 3 --batches 2` |
 | More or fewer maps per family | `--n N` | `--n 4` gives 4 maps in each of the 5 families per seed. |
 | More or fewer crowds per map | `--runs-per-map N` | `--runs-per-map 3` |
-| Only some map families | `--families ...` | `--families corridor funnel` |
+| Only some map families | `--families ...` | `--families corridor funnel`; `randnet` and `bridge` only when named. |
+| Change a physics value in every run | `--set KEY=NUMBER` | `--set pushResidual=0.5` (repeatable; overrides `prop.json`). |
+| Faster or slower arrivals | `--release-scale X` | `--release-scale 0.2` = arrivals 5 times faster. |
+| Limit how fast a group enters | `--max-flow X` | People per metre of entrance width per second; default 1.3, `0` = no limit. |
+| Add walls | `--wall-share X`, `--wall-maps X`, `--bottleneck-walls X` | `--wall-share 0.3`: 30% of links get a wall. |
 | Several simulations at once | `--jobs N` | `--jobs 4` |
 | Shorter or longer simulations | `--sim-minutes N` | `--sim-minutes 30` |
 | Give slow runs more time | `--timeout SECONDS` | `--timeout 7200` |
@@ -352,7 +402,7 @@ The runs per seed are `--n` × number of families × `--runs-per-map`: with the 
 | Ranges for several result folders at once | more folders after the database | `error_bars.py DB fm_sweep fm_models --out fm_errorbars/results.csv` |
 | Ranges for another danger line | `--threshold N` | Must be the threshold the sweep used. |
 
-### The three long jobs
+### The long jobs
 
 | You want to | Add |
 |---|---|
@@ -401,11 +451,11 @@ Anything with `fit(X, y)` and `predict(X)` works. It is then trained with `--mod
 "crushDuration": 240.0,     // seconds above the threshold, in a row, before an agent is crushed
 ```
 
-The 1112 N held for 4 minutes comes from Kroll et al. (2017), who studied fatal chest-compression forces. New scenarios copy these values when they are generated, so change them before running `run_batch.py`. The default `--threshold` of 1062 N is the crush threshold minus the margin; if you change the rule, pass the matching `--threshold`. `pressureTransfer` in the same file sets how high the pressure in a queue can get; read `PHYSICS_NOTES.md` before touching it.
+The 1112 N held for 4 minutes comes from Hopkins et al. (1993, crowd pressure monitoring, in Engineering for Crowd Safety). Kroll et al. (2017), cited here before, do not give it: their model covers short loads only. New scenarios copy these values when they are generated, so change them before running `run_batch.py`. The default `--threshold` of 1062 N is the crush threshold minus the margin; if you change the rule, pass the matching `--threshold`. `pressureTransfer` in the same file sets how high the pressure in a queue can get, so a change to it changes every result.
 
 **What the simulator logs.** `link_logging.fields` in `Crush3/prop.json` lists the per-link values the simulator writes. A new field becomes a new column in the database and a new model input for runs collected after the change.
 
-**Map sizes and crowds.** If your runs never reach dangerous force levels, the walkways are probably too wide or the crowds too small. The ranges are at the top of each map-family function in `make_maps.py` (`corridor`, `funnel`, `tjunction`, `crossroads`, `tree`), and the crowd ranges are in `make_gen`.
+**Map sizes and crowds.** If your runs never reach dangerous force levels, the walkways are probably too wide or the crowds too small. The ranges are at the top of each map-family function in `make_maps.py` (`corridor`, `funnel`, `tjunction`, `crossroads`, `tree`, `bridge`), the random street networks' ranges are in `random_net.py`, and the crowd ranges are in `make_gen`.
 
 Runs collected before and after a change to the physics, the crush rule or the map ranges should not share a database. Give `--db` a new file.
 
@@ -495,7 +545,13 @@ The defaults are whatever the SETTINGS block at the top of the file says; the va
 | `--db` | `/mnt/ssd_1tb/crush/crush.duckdb` | The database file. Its folder must exist. |
 | `--n` | 4 | Maps per family per seed. |
 | `--runs-per-map` | 3 | Different crowds per map. |
-| `--families` | all five | Any of `corridor funnel tjunction crossroads tree`. |
+| `--families` | all five | Any of `corridor funnel tjunction crossroads tree`, plus `randnet` and `bridge`. |
+| `--set KEY=NUMBER` | | Override a numeric `prop.json` value in every run. Repeatable. |
+| `--release-scale` | 1.0 | Multiply each spawn group's release time. |
+| `--max-flow` | 1.3 | Release cap in people per metre of spawn width per second. `0` = off. |
+| `--wall-share` | 0 | Share of links with a wall (`WALL1`/`WALL2` tag, half each). |
+| `--wall-maps` | 1 | Share of maps that get the `--wall-share` walls. |
+| `--bottleneck-walls` | 0 | Share of the walled maps that also get a wall on the bottleneck. |
 | `--start-seed` | 0 | First seed. The same seed always makes the same maps and crowds. |
 | `--sim-minutes` | 60 | Simulated minutes per run. |
 | `--timeout` | 3600 | Real seconds before a stuck run is killed. |
@@ -514,10 +570,13 @@ The defaults are whatever the SETTINGS block at the top of the file says; the va
 |---|---|---|
 | `--horizon` | 10 | Length of the window in ticks: the model predicts the highest value at any point in the next `--horizon` ticks. |
 | `--cv K` | | K-fold test, split by run. |
-| `--holdout-map MAP` | | Test on one map (its name or `map_id`), or `all` to test each map in turn. Cannot be combined with `--cv`. |
+| `--holdout-map MAP` | | Test on one map (its name or `map_id`); `all` = each map in turn; `per-family:K` = K folds, each with about 1/K of every family's maps; `family:NAME` = test on all maps of that family; `runs:P1,P2` = test on the runs whose id starts with P1 or P2. Cannot be combined with `--cv`. |
 | `--test-frac` | 0.2 | With neither `--cv` nor `--holdout-map`: the share of runs held out, once. |
 | `--target` | `pressure held` | What to predict: pressure (N), held time above 1112 N (s), or both. |
 | `--models` | `main` | `main` (Random Forest and XGBoost with history), `other` (the comparison models) or `all`. The baselines are always included. |
+| `--only` | | Train only these models of the set, comma-separated. |
+| `--back` | 10,30,60 | History look-backs in ticks, comma-separated (default: `LAGS` in `models_main.py`). |
+| `--drop` | | Inputs to leave out, comma-separated. |
 | `--observable-only` | off | Hide simulated forces from the models. |
 | `--top-features K` | all | Train on only the K strongest features. Needs `--features-from`. |
 | `--features-from CSV` | | The `importance.csv` of an earlier run, strongest feature first. |
@@ -558,9 +617,32 @@ The defaults are whatever the SETTINGS block at the top of the file says; the va
 | `--window` | `120` | Window length in ticks the model predicts over. |
 | `--cv` | `5` | Number of test folds, split by run. |
 | `--threshold` | `1062` | Pressure (N) that counts as a crossing. |
+| `--observable-only` | off | Leave out the force, pressure and time-over-threshold inputs and their history. |
+| `--resume` | off | Continue a stopped job: give its dated folder as `--out-dir`. |
 | `--out-dir` | `fm_history` | Name of the results folder (dated, in the results folder) for `results.csv` and each look-back's own folder (`back<N>/`). |
 
 It also takes the background options below.
+
+### `input_groups.py`
+
+`python3 Crush3/input_groups.py DATABASE [options]`. Also takes the background options below.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--back` | 10,30,60 | History look-backs in ticks (use the ones the look-back search chose). |
+| `--cut` | | Group cut on 1 − abs(rho): every pair in a group has abs(rho) ≥ 1 − cut. Choose it after `--groups-only`. |
+| `--groups-only` | off | Print the groups at several cuts and stop. No training. |
+| `--window` | 120 | Window length in ticks. |
+| `--cv` | 5 | Number of test folds, split by run. |
+| `--threshold` | 1062 | Pressure (N) that counts as a crossing. |
+| `--models` | both | Only these models. `--stepwise` needs exactly one. |
+| `--stepwise` | off | Remove the group that hurts least, step by step, until one input is left. |
+| `--max-steps` | | With `--stepwise`: stop after this many steps. |
+| `--together` | | Group numbers (from `groups.csv`) to drop all at once. `--cut-one` also cuts these groups to one member. |
+| `--mixes CSV`, `--mix-steps A,B` | | Train every keep/drop mix of what a `--stepwise` run removed between steps A and B. |
+| `--observable-only` | off | Only the inputs a camera could measure. |
+| `--resume` | off | Continue a stopped job: give its dated folder as `--out-dir`. |
+| `--out-dir` | | Results folder for `results.csv`, `groups.csv` and one folder per training. |
 
 ### `sweep_plot.py`
 
@@ -584,7 +666,7 @@ It first recomputes each number and compares it with what the sweep saved, and s
 
 ### Background options
 
-For `run_batch.py`, `force_model.py` and `sweep.py` (section 2).
+For `run_batch.py`, `force_model.py`, `sweep.py`, `history_sweep.py` and `input_groups.py` (section 2).
 
 | Option | Meaning |
 |---|---|

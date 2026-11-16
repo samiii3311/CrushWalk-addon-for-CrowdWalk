@@ -4,7 +4,7 @@ CrushWalk is an experimental addon for the [CrowdWalk](https://github.com/crest-
 
 ## What it adds
 
-CrowdWalk agents normally block each other on a lane. CrushWalk adds two boolean flags to `AgentBase`, `allowOverlap` and `ghostMode`. When `ghostMode` is set, `WalkAgent.calcSocialForce`, `calcSocialForceToHeading`, and `accumulateSocialForces` all short-circuit to `0.0`, and `AgentHandler`'s same-lane predecessor search skips the agent entirely. That is the mechanism a ghost agent uses to pass through a jam without contributing to it or blocking anyone else. The Ruby side handles the actual physics: `GhostAgentManager.rb` (in `Crush2/`, `Crush3/`, `CrushTesting/`, and `Test/`) decides when an agent should become a ghost and tracks a shared blackboard of pressure state.
+CrowdWalk agents normally block each other on a lane. CrushWalk adds two boolean flags to `AgentBase`, `allowOverlap` and `ghostMode`. When `ghostMode` is set, `WalkAgent.calcSocialForce`, `calcSocialForceToHeading`, and `accumulateSocialForces` all short-circuit to `0.0`, and `AgentHandler`'s same-lane predecessor search skips the agent entirely. That is the mechanism a ghost agent uses to pass through a jam without contributing to it or blocking anyone else. The Ruby side handles the actual physics: `GhostAgentManager.rb` (in `Crush3/`, and older copies in `CrushArchive/Crush2/`, `CrushArchive/CrushTest/` and `CrushArchive/CrushTesting/`) decides when an agent should become a ghost and tracks a shared blackboard of pressure state.
 
 `AgentHandler` also gains two loggers, generated and wired in by the patcher:
 
@@ -21,6 +21,8 @@ crowdwalk/
 │                        crush-prediction pipeline (make_maps.py, run_batch.py,
 │                        link_context.py, force_model.py, sweep.py;
 │                        guide in Crush3/README.md)
+├── Test/                One test scenario (Higashiv2.xml map with its
+│                        gen/prop/scenario JSON)
 ├── CrushTools/          Tools (not experiments)
 │   ├── crush/           patchCrowd.py: full patcher (loggers + crush Java
 │   │                    patches + Crush3 Ruby fixes, builds with Gradle);
@@ -38,10 +40,8 @@ crowdwalk/
     ├── MLpractice/      First practice classifiers (September 2026)
     ├── Crush3_old/      bldataset.py (earlier classification dataset) and
     │                    review.py (large-CSV inspector)
-    ├── run.py           Agent-radius sweep runner and plotter (hardcodes a
-    │                    Linux path and output directory)
-    └── 2025/            2025 projects (HigashiKU, Kurume, practice maps,
-                         Result_calc). Local only, not in git
+    └── run.py           Agent-radius sweep runner and plotter (hardcodes a
+                         Linux path and output directory)
 ```
 
 ## Setup
@@ -80,8 +80,8 @@ If you hand-edit a file under a `// === Custom: ... ===` block, you have desynce
 
 `DynamicAgentLogger` reads whatever field names a scenario asks for, so a new per-agent metric does not need a Java rebuild:
 
-1. Compute the value in the agent script, `PhysicalAgent.rb`.
-2. Pass it into `TelemetryHandler.rb` during the per-tick update.
+1. Compute the value in the agent script, `Crush3/CrushAgent.rb`.
+2. Pass it into `Crush3/TelemetryHandler.rb` during the per-tick update.
 3. Map it to an output key inside `TelemetryHandler.rb`.
 4. Add that key to the `dynamic_logging.fields` array in the scenario's `properties.json`.
 
@@ -104,7 +104,7 @@ python CrushArchive/run.py
 A GPX trace converted to model coordinates:
 
 ```
-python gpxToCsv.py input_track.gpx output_coordinates.csv
+python CrushTools/gpxToCsv.py input_track.gpx output_coordinates.csv
 ```
 
 ## Crush-prediction pipeline
@@ -118,5 +118,5 @@ python gpxToCsv.py input_track.gpx output_coordinates.csv
 
 ## Notes
 
-- `crowdwalk/.gitignore` denies everything by default and only allowlists `*[Cc]rush*` paths plus root-level `.json`/`.rb`/`.py`/`.xml` files. A new file added under `src/`, `test/`, `sample/`, or `tools/` needs `git add -f` or it will silently stay untracked.
+- `crowdwalk/.gitignore` denies everything by default and only allowlists `*[Cc]rush*` paths plus root-level `.json`/`.rb`/`.py`/`.xml` files. A new file outside those paths needs `git add -f` or it will silently stay untracked.
 - This addon is under active development as of September 2026. Parts of the code and this document were written with AI assistance.

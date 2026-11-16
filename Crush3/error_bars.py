@@ -108,6 +108,76 @@ def pieces(oof, ev, horizon, threshold):
     return out, o.groupby(keys).ngroups, len(event_runs)
 
 
+def _events3(h, start, gap):
+    """[(crossing, last second above, countable)] for one link-run; h = sorted seconds at or above the line.
+    A crossing is a new event only after more than `gap` s below; first crossings only if the link was below first."""
+    if not len(h):
+        return []
+    br = np.flatnonzero(np.diff(h) > 1)
+    s, e = h[np.r_[0, br + 1]], h[np.r_[br, len(h) - 1]]
+    ev = [[s[0], e[0], s[0] > start]]
+    for a, b, pe in zip(s[1:], e[1:], e[:-1]):
+        if a - pe > gap:
+            ev.append([a, b, True])
+        else:
+            ev[-1][1] = b
+    return ev
+
+
+def _score3(t, ev, horizon, gap):
+    """Warning times of caught events and (correct, false) alarm counts for one link-run; t = sorted alarm seconds."""
+    lab = np.full(len(t), 3)  # 0 during, 1 warning, 2 tail, 3 wasted
+    for c, e, ok in ev:
+        lab[(t >= c) & (t <= e)] = 0
+    leads = []
+    for c, e, ok in ev:
+        if ok:
+            inw = (t >= c - horizon) & (t < c)
+            lab[inw & (lab != 0)] = 1
+            if inw.any():
+                leads.append(min(horizon, c - t[inw].min()))
+    for c, e, ok in ev:
+        lab[(t > e) & (t <= e + gap) & (lab == 3)] = 2
+    correct = false = 0
+    if len(t):
+        ep = np.cumsum(np.r_[True, np.diff(t) > gap])
+        for i in np.unique(ep):
+            L = lab[ep == i]
+            if (L == 1).any():
+                correct += 1
+            elif L[0] == 3:
+                false += 1  # alarms that switch on during an event are neither
+    return leads, correct, false
+
+
+def pieces3(oof, horizon, threshold, gap=120):
+    """pieces() with the three measures in use since 2026-11-11 (same rules as ~/crush_test/q1116/three_metrics.py):
+    events come from the no-change column (current pressure) with a calm gap of `gap` s, alarms are prediction seconds at or
+    above the line joined when off for `gap` s or less, and a correct alarm has a second in the window before a crossing.
+    Same return shape, so median_lead, redraw_se and redraw_diff work unchanged; the pair per run is now
+    [correct + false, correct], so real_share() gives the correct-alarm share."""
+    models = [c for c in oof.columns if c.startswith("pred_") and not c.startswith("pred_baseline")]
+    leads = {m: {} for m in models}
+    alarms = {m: {} for m in models}
+    n_ev, event_runs = 0, set()
+    for (run_id, _), g in oof.sort_values(TICK).groupby(["scenario_id", "link_id"], sort=False):
+        tt = g[TICK].to_numpy()
+        ev = _events3(tt[g[NOW].to_numpy() >= threshold], tt[0], gap)
+        k = sum(1 for x in ev if x[2])
+        n_ev += k
+        if k:
+            event_runs.add(run_id)
+        for m in models:
+            lw, c, f = _score3(tt[g[m].to_numpy() >= threshold], ev, horizon, gap)
+            leads[m].setdefault(run_id, []).extend(lw)
+            a = alarms[m].setdefault(run_id, np.zeros(2, dtype=int))
+            a += (c + f, c)
+    er, runs = sorted(event_runs), sorted(oof.scenario_id.unique())
+    out = {m[len("pred_"):]: ([np.array(leads[m].get(r, []), dtype=float) for r in er], [alarms[m][r] for r in runs])
+           for m in models}
+    return out, n_ev, len(er)
+
+
 def cell(oof, ev, horizon, threshold):
     """One row per model for one window: the two numbers and their ranges."""
     parts, events, event_runs = pieces(oof, ev, horizon, threshold)
@@ -170,6 +240,16 @@ def selftest():
     # two models on the same runs: always 3 s apart, so the difference has no spread however the runs fall
     a = [np.array([v]) for v in (10.0, 20, 30, 40, 50)]
     assert list(redraw_diff(a, [x + 3 for x in a], median_lead, reps=200)) == [3.0, 3.0]
+    # three measures: crossing at 200 (calm before), alarm 100-210 = caught 100 s early, correct; 500-510 = false
+    # (past the event's 120 s tail, 302 + 120); the crossing at 300 is less than 120 s after 205, so the same event
+    t = np.arange(0, 700)
+    p = np.where((t >= 200) & (t <= 205) | (t >= 300) & (t <= 302), 1100.0, 0.0)
+    a = np.where((t >= 100) & (t <= 210) | (t >= 500) & (t <= 510), 1100.0, 0.0)
+    oof3 = pd.DataFrame({"scenario_id": "r", "link_id": "l", TICK: t, NOW: p, "pred_M": a})
+    parts3, n_ev, n_runs = pieces3(oof3, horizon=120, threshold=1062)
+    lw, al = parts3["M"]
+    assert n_ev == 1 and n_runs == 1 and [list(x) for x in lw] == [[100]] and list(al[0]) == [2, 1]
+    assert median_lead(lw) == 100 and real_share(al) == 0.5
     print("selftest ok")
 
 

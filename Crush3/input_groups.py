@@ -58,8 +58,8 @@ import background
 import baselines
 import models_main
 import results
-from error_bars import median_lead, pieces, read_predictions, real_share, redraw_diff
-from force_model import NOT_FEATURES, SIM_ONLY, TARGET, first_crossings, load_data, run
+from error_bars import median_lead, pieces3, read_predictions, real_share, redraw_diff
+from force_model import NOT_FEATURES, SIM_ONLY, TARGET, load_data, run
 from history_sweep import measures, one_se
 
 CUTS = (0.1, 0.2, 0.3, 0.4, 0.5)  # shown by --groups-only so the cut is chosen by looking
@@ -129,7 +129,6 @@ def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, t
             tests.append((f"drop g{i}", i, g))
             if len(g) > 1:
                 tests.append((f"keep one g{i}", i, [c for c in g if c != keep_one(rho, g)]))
-    ev = first_crossings(df, TARGET, threshold)
     models = (lambda columns=None: {n: models_main.new_models(columns)[n] for n in names}) if names else models_main.new_models
     parts, rows = {}, results.done(out_dir, resume)
 
@@ -139,12 +138,12 @@ def sweep(df, backs, window, out_dir, cut, cv=5, threshold=1062.0, names=None, t
             print(f"-- {name}: already in results.csv, skipped")
             if name == "all inputs":
                 oof = read_predictions(out_dir / "all_inputs" / "predictions.csv", df)
-                parts[name], _, _ = pieces(oof, ev, window, threshold)
+                parts[name], _, _ = pieces3(oof, window, threshold)
             return old
         keep = [c for c in cols if c not in removed]  # the keep-list keeps run() from re-adding dropped history columns
         s, oof = run(df, window, 0.2, out_dir / name.replace(" ", "_"), cv=cv, window_max=True, threshold=threshold,
                      top_features=keep, importance=False, models=models)
-        parts[name], events, _ = pieces(oof, ev, window, threshold)
+        parts[name], events, _ = pieces3(oof, window, threshold)
         new = []
         for model in names or list(models_main.new_models()):
             row = {**extra, "test": name, "group": group, "removed": ", ".join(removed), "model": model,

@@ -69,8 +69,8 @@ import background
 import baselines
 import models_main
 import results
-from error_bars import median_lead, pieces, read_predictions, real_share, redraw_diff, redraw_se
-from force_model import TARGET, TICK, first_crossings, load_data, run
+from error_bars import median_lead, pieces3, read_predictions, real_share, redraw_diff, redraw_se
+from force_model import TARGET, TICK, load_data, run
 
 BACK = (0, 10, 30, 60, 120, 300)  # look-backs to try, in ticks (1 tick = 1 s)
 
@@ -89,19 +89,18 @@ def sweep(df, backs, window, out_dir, cv=5, threshold=1062.0, single=False, resu
     pick = lambda f: lambda columns=None: {k: v for k, v in f(columns).items() if k in names}
     # history and Holt columns once, for the longest look-back; each training drops what it may not see
     df = baselines.add_holt(models_main.add_lags(df, [b for b in backs if b]))
-    ev = first_crossings(df, TARGET, threshold)
     parts, rows = {}, results.done(out_dir, resume)
     finished = {r["back_s"] for r in rows}
     for before, back in zip([None] + backs, backs):
         if back in finished:  # the next look-back is compared with this one, so its pieces are still needed
             print(f"-- back{back}: already in results.csv, skipped")
-            parts[back], _, _ = pieces(read_predictions(out_dir / f"back{back}" / "predictions.csv", df), ev, window, threshold)
+            parts[back], _, _ = pieces3(read_predictions(out_dir / f"back{back}" / "predictions.csv", df), window, threshold)
             continue
         keep = {back} if single else {b for b in backs if b <= back}
         s, oof = run(drop_history(df, keep), window, 0.2, out_dir / f"back{back}", cv=cv, window_max=True,
                      threshold=threshold, importance=False, models=pick(models_main.new_models if back else no_history),
                      observable_only=observable_only)
-        parts[back], events, _ = pieces(oof, ev, window, threshold)
+        parts[back], events, _ = pieces3(oof, window, threshold)
         for model in names:
             leads, alarms = parts[back][model]
             row = {"back_s": back, "model": model, **measures(s, parts[back], model, events)}
@@ -124,6 +123,7 @@ def drop_history(df, keep):
 
 
 def measures(s, parts, model, events):
+    # since 2026-11-16 parts come from pieces3 (three measures): alarms_real_share / real_se hold the correct-alarm share
     leads, alarms = parts[model]
     return {"MAE": s.loc[model, ("MAE", "mean")], "events": events, "events_missed": events - sum(len(x) for x in leads),
             "median_warning_s": median_lead(leads), "alarms_real_share": real_share(alarms),
@@ -136,7 +136,6 @@ def search(df, pool, window, out_dir, cv=5, threshold=1062.0, directions=("forwa
     resume: sets already in results.csv are not trained again; the searches replay and mark their paths anew."""
     pool = sorted(set(pool) - {0})
     df = baselines.add_holt(models_main.add_lags(df, pool))
-    ev = first_crossings(df, TARGET, threshold)
     rows = {}  # (model, look-backs) -> row; a set reached twice is trained once
     for r in results.done(out_dir, resume):
         tag = str(r["backs"])  # a single look-back is read back as a number
@@ -154,7 +153,7 @@ def search(df, pool, window, out_dir, cv=5, threshold=1062.0, directions=("forwa
             only = lambda columns=None: {model: models_main.new_models(columns)[model]}
             s, oof = run(drop_history(df, set(backs)), window, 0.2, out_dir / f"{model}_{tag}", cv=cv, window_max=True,
                          threshold=threshold, importance=False, models=only, observable_only=observable_only)
-            parts, events, _ = pieces(oof, ev, window, threshold)
+            parts, events, _ = pieces3(oof, window, threshold)
             rows[model, backs] = {"model": model, "backs": tag, "n_back": len(backs), "longest_s": backs[-1],
                                   "path": "", **measures(s, parts, model, events)}
             save()

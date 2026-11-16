@@ -486,7 +486,7 @@ def main():
                         "models (models_other.py); all = both")
     p.add_argument("--only", help="train only these models of the set, comma-separated (e.g. RF_history)")
     p.add_argument("--back", help="history look-backs in ticks, comma-separated (default: LAGS in models_main.py, "
-                                  "10,30,60); the chosen ones are RF 30, XGB 4")
+                                  "10,30,60); the chosen ones are XGBoost 4, RF 36")
     p.add_argument("--drop", default="", help="inputs to leave out, comma-separated (e.g. the 'removed' list of an "
                                               "input_groups.py row)")
     background.stop_requested()

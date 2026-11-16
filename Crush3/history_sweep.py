@@ -19,7 +19,7 @@ With --search, the --back list is a pool and the script tries sets of them toget
 10, for example), one path per model:
   forward   start with no history, add the look-back that helps most, repeat until all are in
   backward  start with all of them, drop the one whose loss hurts least, repeat until one is left
-"Helps most" = fewest missed events, then the highest share of real alarms (warning time is flat
+"Helps most" = fewest missed events, then the highest share of correct alarms (warning time is flat
 across look-backs, so it cannot rank them). A set both searches reach is trained once. The
 one-standard-error rule below is then applied over the sets on the two paths, and the set with the
 fewest look-backs that passes is marked (pick); ties go to the one whose longest look-back is shortest.
@@ -36,7 +36,7 @@ How to read it (rule 2 changed to the one-standard-error rule on 2026-10-15, use
      whatever else it gains: a missed event is worse than a false alarm.
   2. One-standard-error rule (Hastie, Tibshirani & Friedman, The Elements of Statistical
      Learning): among the look-backs that miss the fewest events, take the shortest one whose
-     warning time and share of real alarms are both within one standard error of the best row's.
+     warning time and share of correct alarms are both within one standard error of the best row's.
      The table marks these rows (1se = wr); the standard error is the spread over the re-draws.
   3. The choice was made on these test runs, so confirm it once on runs that played no part in
      it (a later seed) before it becomes a headline number.
@@ -205,7 +205,7 @@ def show_search(res):
                       "pick": res.pick.map({True: "<-", False: ""}), "n": res.n_back, "l": res.longest_s})
     print("\n== sets of look-backs; path = which search step chose the set (- = tried, not chosen) ==")
     print(t.sort_values(["model", "n", "l"], kind="stable").drop(columns=["n", "l"]).to_string(index=False))
-    print("1se: w / r = within one standard error of the best set on the paths, on warning / real alarms,")
+    print("1se: w / r = within one standard error of the best set on the paths, on warning / correct alarms,")
     print("among the path sets that miss the fewest events. pick = the passing set with the fewest look-backs.")
 
 
@@ -233,7 +233,7 @@ def show(res):
         t["d_real_%"], t["lo "], t["hi "] = pct(res.d_alarms_real), pct(res.d_alarms_real_lo), pct(res.d_alarms_real_hi)
     print("\n== look-back by look-back; d_ = this row minus the row above it, lo/hi = 95% range of that difference ==")
     print(t.sort_values(["model", "back_s"], kind="stable").to_string(index=False, na_rep=""))
-    print("se_ = standard error. 1se: w / r = within one standard error of the best row on warning / real alarms,")
+    print("se_ = standard error. 1se: w / r = within one standard error of the best row on warning / correct alarms,")
     print("among the rows that miss the fewest events. One-standard-error rule: take the shortest look-back marked wr.")
 
 

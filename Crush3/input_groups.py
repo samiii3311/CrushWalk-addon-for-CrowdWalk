@@ -13,11 +13,12 @@ barely hurts (the others stand in) and all of them look unimportant. This script
   2. For each group, retrain without it ("drop"), and for groups of two or more also with only one
      member left ("keep one": the member most correlated with the rest). "Keep one" losing nothing
      means the group can be one input; "drop" losing nothing means the group is not needed at all.
-  3. Every training is scored like history_sweep.py: events missed, warning time, share of real
+  3. Every training is scored like history_sweep.py, with the three measures (error_bars.pieces3): events
+     missed, warning time, share of correct
      alarms, and the difference to "all inputs" with its 95% range on the same re-drawn test runs.
 
 The script prints the table and does not choose. Reading it (same rule as the look-back):
-  missed events first; then a change is fine if both warning time and real alarms stay within one
+  missed events first; then a change is fine if both warning time and correct alarms stay within one
   standard error of the best row (1se = wr). Confirm the final input set once on seeds 3-4.
 Aim 2 (inputs that are missing) does not come out of this table; it comes from the events the
 model misses or warns late.
@@ -231,7 +232,7 @@ def show(res):
         t["chosen"] = res.chosen.map({True: "<-", False: ""}).fillna("")
     print("\n== each group dropped, or cut to one member; d_ = this row minus all inputs, lo/hi = its 95% range ==")
     print(t.to_string(index=False, na_rep=""))
-    print("1se: w / r = within one standard error of the best row on warning / real alarms, among the rows that miss")
+    print("1se: w / r = within one standard error of the best row on warning / correct alarms, among the rows that miss")
     print("the fewest events. Group members are in groups.csv.")
 
 
